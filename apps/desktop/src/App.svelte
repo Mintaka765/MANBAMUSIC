@@ -8,6 +8,8 @@
   import PlayerBar from './lib/PlayerBar.svelte';
   import SearchBar from './lib/SearchBar.svelte';
   import ThemePicker from './lib/components/ThemePicker.svelte';
+  import QueuePanel from './lib/QueuePanel.svelte';
+  import SettingsPanel from './lib/SettingsPanel.svelte';
   import TrackList from './lib/TrackList.svelte';
   import { themeStore } from './lib/theme/store.svelte';
   import {
@@ -20,9 +22,13 @@
     nextTrack,
     pausePlayer,
     playerSnapshot,
+    queueItems,
     playlistTracks,
     playQueue,
     previousTrack,
+    dailySongs,
+    playRadio,
+    radarTracks,
     queueState,
     resumePlayer,
     searchTracks,
@@ -70,6 +76,8 @@
   let lyricsOpen = $state(false);
   let stageOpen = $state(false);
   let settingsOpen = $state(false);
+  let queueOpen = $state(false);
+  let settingsPageOpen = $state(false);
 
   const appWindow = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window ? getCurrentWindow() : null;
   const minimizeWindow = () => void appWindow?.minimize();
@@ -98,8 +106,10 @@
 
   const nav = [
     { key: 'search', label: '搜索', icon: 'song' as const, hint: '歌曲 · 歌手 · 歌单' },
-    { key: 'discover', label: '发现音乐', icon: 'home' as const, hint: '每日推荐 / 新歌' },
-    { key: 'library', label: '我的音乐', icon: 'heart' as const, hint: '收藏 / 最近播放' },
+    { key: 'discover', label: '发现音乐', icon: 'home' as const, hint: '每日推荐' },
+    { key: 'radio', label: '漫游', icon: 'radio' as const, hint: '私人 FM，无限续播' },
+    { key: 'radar', label: '私人雷达', icon: 'radar' as const, hint: '每天更新的雷达歌单' },
+    { key: 'library', label: '我的音乐', icon: 'heart' as const, hint: '我喜欢的音乐' },
     { key: 'local', label: '本地音乐', icon: 'album' as const, hint: '扫描本地文件' },
   ];
   let active = $state('search');
@@ -128,6 +138,17 @@
     };
   });
 
+
+  // 漫游模式下队列会在后端自动续歌：当前曲目变化时同步一下列表
+  $effect(() => {
+    const id = current?.id;
+    if (active !== 'radio' || !id) return;
+    void queueItems()
+      .then((data) => {
+        tracks = data.tracks;
+      })
+      .catch(() => {});
+  });
 
   onMount(() => {
     themeStore.init();
@@ -195,12 +216,97 @@
     }
   }
 
-  /** 侧栏导航：目前只有「我的音乐」有实际去处（我喜欢的音乐） */
+  /** 每日推荐按天缓存：同一天内来回切导航不重复请求 */
+  let dailyCache: { date: string; tracks: Track[] } | null = null;
+  /** 私人雷达当次会话内不重复拉（歌单每天更新，重开应用才刷新） */
+  let radarCache: Track[] | null = null;
+
+  function todayKey() {
+    const now = new Date();
+    return `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`;
+  }
+
+  async function loadDaily() {
+    error = null;
+    searched = true;
+    const key = todayKey();
+    listTitle = `每日推荐 · ${new Date().getMonth() + 1} 月 ${new Date().getDate()} 日`;
+
+    if (dailyCache && dailyCache.date === key) {
+      tracks = dailyCache.tracks;
+      return;
+    }
+
+    tracks = [];
+    listLoading = true;
+    try {
+      const list = await dailySongs();
+      if (list.length === 0) {
+        error = '每日推荐需要登录后才能获取，先去左下角「设置」扫码登录。';
+        return;
+      }
+      dailyCache = { date: key, tracks: list };
+      tracks = list;
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      listLoading = false;
+    }
+  }
+
+  /** 侧栏导航：发现音乐 → 每日推荐；我的音乐 → 我喜欢的音乐 */
   async function selectNav(key: string) {
     active = key;
+    if (key === 'discover') {
+      await loadDaily();
+      return;
+    }
+    if (key === 'radio') {
+      error = null;
+      searched = true;
+      listTitle = '漫游 · 私人 FM';
+      tracks = [];
+      listLoading = true;
+      try {
+        await playRadio();
+        const data = await queueItems();
+        tracks = data.tracks;
+      } catch (cause) {
+        error = cause instanceof Error ? cause.message : String(cause);
+      } finally {
+        listLoading = false;
+      }
+      return;
+    }
+
+    if (key === 'radar') {
+      error = null;
+      searched = true;
+      listTitle = '私人雷达';
+      if (radarCache) {
+        tracks = radarCache;
+        return;
+      }
+      tracks = [];
+      listLoading = true;
+      try {
+        const list = await radarTracks();
+        if (list.length === 0) {
+          error = '私人雷达需要登录后才能获取。';
+          return;
+        }
+        radarCache = list;
+        tracks = list;
+      } catch (cause) {
+        error = cause instanceof Error ? cause.message : String(cause);
+      } finally {
+        listLoading = false;
+      }
+      return;
+    }
+
     if (key !== 'library') return;
-    try {
-      const lists = await myPlaylists();
+    try {      const lists = await myPlaylists();
       // 官方「我喜欢的音乐」specialType=5；账号里可能有多张历史遗留，取曲目最多的那张
       const liked =
         lists
@@ -438,6 +544,13 @@
             class="pop-item"
             onclick={() => {
               settingsOpen = false;
+              settingsPageOpen = true;
+            }}>设置…</button
+          >
+          <button
+            class="pop-item"
+            onclick={() => {
+              settingsOpen = false;
               showThemes = true;
             }}>主题外观</button
           >
@@ -522,11 +635,23 @@
       onopen={() => (stageOpen = true)}
       onseek={seek}
       onvolume={(volume) => setVolume(volume)}
+      onqueue={() => (queueOpen = !queueOpen)}
       liked={current ? likedIds.has(current.id) : false}
       onlike={toggleLike}
     />
   </div>
 </div>
+
+<QueuePanel open={queueOpen} currentId={current?.id ?? null} onclose={() => (queueOpen = false)} />
+
+<SettingsPanel
+  open={settingsPageOpen}
+  onclose={() => (settingsPageOpen = false)}
+  ontheme={() => {
+    settingsPageOpen = false;
+    showThemes = true;
+  }}
+/>
 
 {#if stageOpen && current}
   <NowPlaying
@@ -1233,6 +1358,12 @@
       opacity: 1;
     }
   }</style>
+
+
+
+
+
+
 
 
 

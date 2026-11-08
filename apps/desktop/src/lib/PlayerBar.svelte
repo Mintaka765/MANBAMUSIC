@@ -18,6 +18,7 @@
     onopen,
     onseek,
     onvolume,
+    onqueue,
     liked = false,
     onlike,
   }: {
@@ -35,6 +36,7 @@
     onopen: () => void;
     onseek: (ms: number) => void;
     onvolume: (volume: number) => void;
+    onqueue?: () => void;
     liked?: boolean;
     onlike?: () => void;
   } = $props();
@@ -220,6 +222,10 @@
 
     <button class="icon mode" aria-label="桌面歌词" title="桌面歌词" onclick={onlyrics}>
       <span class="char" aria-hidden="true">词</span>
+    </button>
+
+    <button class="icon mode" aria-label="待播清单" title="待播清单" onclick={onqueue}>
+      <Icon name="queue" size={17} />
     </button>
 
     </div>
@@ -653,6 +659,7 @@
   .like.on :global(svg) {
     fill: currentColor;
   }</style>
+
 
 
 

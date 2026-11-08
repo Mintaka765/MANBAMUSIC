@@ -61,6 +61,8 @@ struct QueueState {
     shuffle: bool,
     /// 已经预挂载、还没开始播的下一首：(order 位置, track_id)。
     pending: Option<(usize, u64)>,
+    /// 漫游模式：播到队尾时自动再取一批（私人 FM 是流，不是固定歌单）。
+    radio: bool,
 }
 
 impl QueueState {
@@ -88,6 +90,18 @@ impl QueueState {
         }
     }
 
+    /// 漫游模式：忽略 repeat，走到队尾就返回 None（交给 refill 续歌）。
+    fn next_position_radio(&self) -> Option<usize> {
+        if self.order.is_empty() {
+            return None;
+        }
+        if self.position + 1 < self.order.len() {
+            Some(self.position + 1)
+        } else {
+            None
+        }
+    }
+
     fn previous_position(&self) -> Option<usize> {
         if self.order.is_empty() {
             return None;
@@ -108,6 +122,8 @@ struct AppState {
     queue: Mutex<QueueState>,
     url_cache: Mutex<HashMap<u64, CachedUrl>>,
     profile: Mutex<Option<UserProfile>>,
+    /// 用户偏好（音质、关窗行为）
+    settings: Mutex<Settings>,
     /// 音量的权威值：播放器线程的快照有延迟，落盘不能依赖它。
     volume: Mutex<f32>,
     /// 上一次把状态写盘的时间，给音量拖动做节流。
@@ -137,6 +153,54 @@ impl Default for PersistedState {
             position: 0,
         }
     }
+}
+
+/// 用户偏好（落盘到 `<data>/settings.json`）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct Settings {
+    /// standard / higher / exhigh / lossless
+    level: String,
+    /// 关闭窗口时最小化到托盘而不是退出
+    close_to_tray: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            level: "exhigh".into(),
+            close_to_tray: false,
+        }
+    }
+}
+
+fn normalize_level(level: &str) -> String {
+    match level {
+        "standard" | "higher" | "exhigh" | "lossless" => level.to_string(),
+        _ => "exhigh".to_string(),
+    }
+}
+
+fn settings_path() -> PathBuf {
+    data_root().join("settings.json")
+}
+
+fn load_settings() -> Settings {
+    let Ok(text) = std::fs::read_to_string(settings_path()) else {
+        return Settings::default();
+    };
+    let mut settings: Settings = serde_json::from_str(&text).unwrap_or_default();
+    settings.level = normalize_level(&settings.level);
+    settings
+}
+
+fn store_settings(settings: &Settings) -> std::io::Result<()> {
+    let path = settings_path();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let text = serde_json::to_string_pretty(settings).unwrap_or_else(|_| "{}".into());
+    std::fs::write(path, text)
 }
 
 fn state_path() -> PathBuf {
@@ -320,6 +384,16 @@ struct QueueDto {
     shuffle: bool,
 }
 
+/// 待播清单：按**实际播放顺序**排好的队列，`position` 是当前曲目在其中的下标。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct QueueItemsDto {
+    tracks: Vec<TrackLite>,
+    position: usize,
+    /// 是否处于漫游（私人 FM）模式
+    radio: bool,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct LyricLineDto {
@@ -354,7 +428,17 @@ async fn resolve_full(state: &AppState, id: u64) -> Result<(String, Option<u64>)
         }
     }
 
-    let resolved = endpoints::play_url_with_fallback(&state.client, id, &["exhigh", "standard"])
+    // 用户选的音质优先；拿不到就回落到标准音质
+    let level = state
+        .settings
+        .lock()
+        .map(|settings| settings.level.clone())
+        .unwrap_or_else(|_| "exhigh".to_string());
+    let mut chain = vec![level.as_str()];
+    if level != "standard" {
+        chain.push("standard");
+    }
+    let resolved = endpoints::play_url_with_fallback(&state.client, id, &chain)
         .await
         .map_err(|err| err.to_string())?;
 
@@ -533,6 +617,7 @@ async fn play_queue(
         let mut queue = state.queue.lock().map_err(|_| "队列锁失败")?;
         queue.tracks = tracks;
         queue.pending = None;
+        queue.radio = false;
         queue.order = if queue.shuffle {
             let mut order = shuffle_order(queue.tracks.len());
             // 让用户点的那首排最前
@@ -562,6 +647,7 @@ async fn play_track(state: State<'_, AppState>, id: u64) -> Result<(), String> {
         queue.order = vec![];
         queue.position = 0;
         queue.pending = None;
+        queue.radio = false;
     }
     let url = resolve_url(&state, id).await?;
     state.player.send(Command::Play {
@@ -584,15 +670,60 @@ async fn previous_track(state: State<'_, AppState>) -> Result<(), String> {
 }
 
 async fn advance(state: &AppState) -> Result<(), String> {
-    let position = {
+    let (position, radio) = {
         let mut queue = state.queue.lock().map_err(|_| "队列锁失败")?;
         queue.pending = None;
-        queue.next_position()
+        let radio = queue.radio;
+        let position = if radio {
+            queue.next_position_radio()
+        } else {
+            queue.next_position()
+        };
+        (position, radio)
     };
     match position {
         Some(position) => play_at(state, position).await,
-        None => Ok(()),
+        None => {
+            // 漫游模式到队尾：再取一批接着放（私人 FM 是流，没有"最后一首"）
+            if !radio {
+                return Ok(());
+            }
+            match refill_radio(state).await? {
+                Some(next) => play_at(state, next).await,
+                None => Ok(()),
+            }
+        }
     }
+}
+
+/// 给漫游队列补一批歌，返回新一批在 order 里的第一个位置。
+async fn refill_radio(state: &AppState) -> Result<Option<usize>, String> {
+    let mut fresh: Vec<TrackLite> = Vec::new();
+    for _ in 0..3 {
+        if let Ok(songs) = endpoints::radio_get(&state.client).await {
+            fresh.extend(songs.into_iter().map(TrackLite::from));
+        }
+    }
+    if fresh.is_empty() {
+        return Ok(None);
+    }
+
+    let mut queue = state.queue.lock().map_err(|_| "队列锁失败")?;
+    let start = queue.tracks.len();
+    let mut seen: std::collections::HashSet<u64> =
+        queue.tracks.iter().map(|track| track.id).collect();
+    for track in fresh {
+        if !seen.insert(track.id) {
+            continue;
+        }
+        let index = queue.tracks.len();
+        queue.order.push(index);
+        queue.tracks.push(track);
+    }
+    if queue.tracks.len() == start {
+        return Ok(None);
+    }
+    Ok(Some(start))
 }
 
 async fn rewind(state: &AppState) -> Result<(), String> {
@@ -785,6 +916,104 @@ fn queue_state(state: State<'_, AppState>) -> QueueDto {
         repeat: queue.repeat.as_str().to_string(),
         shuffle: queue.shuffle,
     }
+}
+
+#[tauri::command]
+fn get_settings(state: State<'_, AppState>) -> Settings {
+    state
+        .settings
+        .lock()
+        .map(|settings| settings.clone())
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+fn save_settings(state: State<'_, AppState>, settings: Settings) -> Result<Settings, String> {
+    let clean = Settings {
+        level: normalize_level(&settings.level),
+        close_to_tray: settings.close_to_tray,
+    };
+    if let Ok(mut current) = state.settings.lock() {
+        *current = clean.clone();
+    }
+    store_settings(&clean).map_err(|error| error.to_string())?;
+    Ok(clean)
+}
+
+/// 开始漫游（私人 FM）：先取几批凑一个起始队列，之后播到队尾自动续。
+#[tauri::command]
+async fn play_radio(state: State<'_, AppState>) -> Result<(), String> {
+    let mut fresh: Vec<TrackLite> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for _ in 0..3 {
+        if let Ok(songs) = endpoints::radio_get(&state.client).await {
+            for song in songs {
+                let track = TrackLite::from(song);
+                if seen.insert(track.id) {
+                    fresh.push(track);
+                }
+            }
+        }
+    }
+    if fresh.is_empty() {
+        return Err("漫游暂时没有内容，稍后再试".into());
+    }
+
+    {
+        let mut queue = state.queue.lock().map_err(|_| "队列锁失败")?;
+        queue.tracks = fresh;
+        queue.order = (0..queue.tracks.len()).collect();
+        queue.position = 0;
+        queue.pending = None;
+        queue.radio = true;
+    }
+    play_at(&state, 0).await
+}
+
+/// 私人雷达：每天更新的一个歌单，直接从推荐资源里找 id 再取曲目。
+#[tauri::command]
+async fn radar_tracks(state: State<'_, AppState>) -> Result<Vec<TrackLite>, String> {
+    let id = endpoints::private_radar_id(&state.client).await;
+    endpoints::playlist_tracks(&state.client, id)
+        .await
+        .map(|songs| songs.into_iter().map(TrackLite::from).collect())
+        .map_err(|error| error.to_string())
+}
+
+/// 每日推荐（未登录时网易不给数据，前端会提示先登录）。
+#[tauri::command]
+async fn daily_songs(state: State<'_, AppState>) -> Result<Vec<TrackLite>, String> {
+    endpoints::daily_songs(&state.client)
+        .await
+        .map(|songs| songs.into_iter().map(TrackLite::from).collect())
+        .map_err(|error| error.to_string())
+}
+/// 待播清单：按播放顺序展开（随机模式下就是打乱后的顺序）。
+#[tauri::command]
+fn queue_items(state: State<'_, AppState>) -> QueueItemsDto {
+    let Ok(queue) = state.queue.lock() else {
+        return QueueItemsDto {
+            tracks: Vec::new(),
+            position: 0,
+            radio: false,
+        };
+    };
+
+    QueueItemsDto {
+        tracks: queue
+            .order
+            .iter()
+            .filter_map(|index| queue.tracks.get(*index).cloned())
+            .collect(),
+        position: queue.position,
+        radio: queue.radio,
+    }
+}
+
+/// 从待播清单的某一项开始播放。
+#[tauri::command]
+async fn jump_to(state: State<'_, AppState>, index: usize) -> Result<(), String> {
+    play_at(&state, index).await
 }
 
 #[tauri::command]
@@ -1182,6 +1411,7 @@ fn main() {
             queue: Mutex::new(QueueState::default()),
             url_cache: Mutex::new(HashMap::new()),
             profile: Mutex::new(None),
+            settings: Mutex::new(load_settings()),
             volume: Mutex::new(0.8),
             last_persist: Mutex::new(Instant::now() - Duration::from_secs(10)),
         })
@@ -1207,6 +1437,27 @@ fn main() {
                 Err(error) => eprintln!("[window] set_decorations failed: {error}"),
             }
             eprintln!("[window] is_decorated now = {:?}", window.is_decorated());
+
+            // 关闭窗口时：可选最小化到托盘而不是退出
+            {
+                let handle = app.handle().clone();
+                window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        let to_tray = handle
+                            .state::<AppState>()
+                            .settings
+                            .lock()
+                            .map(|settings| settings.close_to_tray)
+                            .unwrap_or(false);
+                        if to_tray {
+                            api.prevent_close();
+                            if let Some(main) = handle.get_webview_window("main") {
+                                let _ = main.hide();
+                            }
+                        }
+                    }
+                });
+            }
 
             // ---- 托盘 ----
             let toggle_item = MenuItem::with_id(app, "toggle", "播放 / 暂停", true, None::<&str>)?;
@@ -1339,6 +1590,13 @@ fn main() {
             next_track,
             previous_track,
             queue_state,
+            queue_items,
+            daily_songs,
+            play_radio,
+            radar_tracks,
+            get_settings,
+            save_settings,
+            jump_to,
             set_repeat,
             toggle_shuffle,
             player_snapshot,
@@ -1363,6 +1621,17 @@ fn main() {
         .run(tauri::generate_context!())
         .expect("Tauri 启动失败");
 }
+
+
+
+
+
+
+
+
+
+
+
 
 
 

@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import type {
+  AppSettings,
   LyricTrack,
   PlayerSnapshot,
   Playlist,
@@ -140,6 +141,45 @@ export async function likedSongs(ids: number[]): Promise<number[]> {
   return invoke<number[]>('liked_songs', { ids });
 }
 
+/** 待播清单（按实际播放顺序）。 */
+export interface QueueItems {
+  tracks: Track[];
+  position: number;
+}
+
+export async function queueItems(): Promise<QueueItems> {
+  if (!isDesktop) return { tracks: [], position: 0 };
+  return invoke<QueueItems>('queue_items');
+}
+
+/** 从待播清单的第 index 项开始播放。 */
+export async function jumpTo(index: number): Promise<void> {
+  if (isDesktop) await invoke('jump_to', { index });
+}
+export async function getSettings(): Promise<AppSettings> {
+  if (!isDesktop) return { level: 'exhigh', closeToTray: false };
+  return invoke<AppSettings>('get_settings');
+}
+
+export async function saveSettings(settings: AppSettings): Promise<AppSettings> {
+  if (!isDesktop) return settings;
+  return invoke<AppSettings>('save_settings', { settings });
+}
+/** 每日推荐（未登录时后端会返回空数组或报错）。 */
+export async function dailySongs(): Promise<Track[]> {
+  if (!isDesktop) return [];
+  return invoke<Track[]>('daily_songs');
+}
+/** 开始漫游（私人 FM），失败抛错。 */
+export async function playRadio(): Promise<void> {
+  if (isDesktop) await invoke('play_radio');
+}
+
+/** 私人雷达歌单曲目。 */
+export async function radarTracks(): Promise<Track[]> {
+  if (!isDesktop) return [];
+  return invoke<Track[]>('radar_tracks');
+}
 export async function playerSnapshot(): Promise<PlayerSnapshot> {
   if (!isDesktop) return IDLE;
   return invoke<PlayerSnapshot>('player_snapshot');
@@ -196,4 +236,8 @@ export async function playlistTracks(id: number): Promise<Track[]> {
   if (!isDesktop) return [];
   return invoke<Track[]>('playlist_tracks', { id });
 }
+
+
+
+
 

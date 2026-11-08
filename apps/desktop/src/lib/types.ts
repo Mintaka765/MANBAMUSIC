@@ -55,6 +55,15 @@ export interface Playlist {
 
 export type QrStatus = 'waiting' | 'scanned' | 'expired' | 'success';
 
+/** 音质等级，对应网易的 level 参数。 */
+export type AudioLevel = 'standard' | 'higher' | 'exhigh' | 'lossless';
+
+/** 与 Rust 侧 Settings 对齐（落盘在 <data>/settings.json）。 */
+export interface AppSettings {
+  level: AudioLevel;
+  closeToTray: boolean;
+}
+
 /** 与 Rust 侧 `QueueDto` 对齐。 */
 export interface QueueState {
   tracks: Track[];
@@ -62,4 +71,5 @@ export interface QueueState {
   repeat: 'off' | 'all' | 'one';
   shuffle: boolean;
 }
+
 

@@ -16,7 +16,9 @@
     | 'heart'
     | 'plus'
     | 'settings'
-    | 'queue';
+    | 'queue'
+    | 'radio'
+    | 'radar';
 
   let { name, size = 16 }: { name: IconName; size?: number } = $props();
 
@@ -97,6 +99,15 @@
   {:else if name === 'settings'}
     <circle cx="12" cy="12" r="3" />
     <path d="M12 3.5v2.2M12 18.3v2.2M4.9 7.8l1.9 1.1M17.2 15.1l1.9 1.1M4.9 16.2l1.9-1.1M17.2 8.9l1.9-1.1" />
+  {:else if name === 'radio'}
+    <circle cx="12" cy="12" r="2.2" />
+    <path d="M7.6 7.6a6.2 6.2 0 0 0 0 8.8M16.4 7.6a6.2 6.2 0 0 1 0 8.8" />
+    <path d="M4.6 4.6a10.5 10.5 0 0 0 0 14.8M19.4 4.6a10.5 10.5 0 0 1 0 14.8" />
+  {:else if name === 'radar'}
+    <circle cx="12" cy="12" r="8.6" />
+    <circle cx="12" cy="12" r="4.4" />
+    <path d="M12 12l4.8-4.8" />
+    <circle cx="12" cy="12" r="1" fill="currentColor" stroke="none" />
   {:else if name === 'queue'}
     <path d="M4 7h11M4 12h11M4 17h7" />
     <path d="M18 10v7l3-2" />
