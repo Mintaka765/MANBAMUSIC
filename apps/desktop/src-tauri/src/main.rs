@@ -1037,6 +1037,51 @@ fn smoke_report(value: String) {
 // 路径与启动
 // ---------------------------------------------------------------------------
 
+/// 启动日志：双击运行失败时（无签名被拦、目录不可写等）这是唯一线索。
+/// 优先写到 exe 同目录，不行再退到临时目录；整个过程不 panic。
+fn startup_log_path() -> PathBuf {
+    static LOG: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    LOG.get_or_init(|| {
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() {
+                let path = dir.join("startup.log");
+                if std::fs::write(&path, b"").is_ok() {
+                    return path;
+                }
+            }
+        }
+        let fallback = std::env::temp_dir().join("Manbamusic-startup.log");
+        let _ = std::fs::write(&fallback, b"");
+        fallback
+    })
+    .clone()
+}
+
+fn log_startup(message: &str) {
+    use std::io::Write;
+    let path = startup_log_path();
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = writeln!(file, "[{}] {message}", unix_stamp());
+    }
+}
+
+fn unix_stamp() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    format!("{}.{:03}", now.as_secs(), now.subsec_millis())
+}
+
+/// 回退只在第一次记一条，避免每次 data_root() 都刷日志。
+fn log_fallback_once(path: &Path) {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| log_startup(&format!("数据目录回退到 {}", path.display())));
+}
+
 fn data_root() -> PathBuf {
     if let Some(dir) = std::env::var_os("MANBAMUSIC_DATA_DIR") {
         return PathBuf::from(dir);
@@ -1051,10 +1096,26 @@ fn data_root() -> PathBuf {
         return preferred;
     }
 
+    // 便携模式：跟 exe 放一起（U 盘、解压到桌面都能用）
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let portable = dir.join("Manbamusic-data");
+            if writable(&portable) {
+                log_fallback_once(&portable);
+                return portable;
+            }
+        }
+    }
+
     let fallback = std::env::temp_dir().join("Manbamusic");
-    let _ = std::fs::create_dir_all(&fallback);
-    eprintln!("数据目录不可写，回退到 {}", fallback.display());
-    fallback
+    if writable(&fallback) {
+        log_fallback_once(&fallback);
+        return fallback;
+    }
+
+    log_startup("所有数据目录都不可写，程序无法继续");
+    eprintln!("所有候选数据目录都不可写");
+    std::process::exit(2);
 }
 
 fn webview_data_dir() -> PathBuf {
@@ -1064,16 +1125,32 @@ fn webview_data_dir() -> PathBuf {
 }
 
 fn writable(dir: &Path) -> bool {
-    if std::fs::create_dir_all(dir).is_err() {
+    if let Err(error) = std::fs::create_dir_all(dir) {
+        eprintln!("[data] 创建 {} 失败: {error}", dir.display());
         return false;
     }
     let probe = dir.join(".write-probe");
-    let ok = std::fs::write(&probe, b"1").is_ok();
-    let _ = std::fs::remove_file(&probe);
-    ok
+    match std::fs::write(&probe, b"1") {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(error) => {
+            eprintln!("[data] 写入 {} 失败: {error}", probe.display());
+            false
+        }
+    }
 }
 
 fn main() {
+    // 先落一条启动记录：双击没反应时用户需要这个文件
+    let root = data_root();
+    log_startup(&format!(
+        "启动 exe={:?} 数据目录={:?}",
+        std::env::current_exe().unwrap_or_default(),
+        root
+    ));
+
     let client = match Client::new() {
         Ok(client) => client,
         Err(err) => {
@@ -1286,6 +1363,8 @@ fn main() {
         .run(tauri::generate_context!())
         .expect("Tauri 启动失败");
 }
+
+
 
 
 
