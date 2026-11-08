@@ -18,3 +18,6 @@ AGENTS.md
 
 # 设计工具本地元数据
 .superdesign/
+
+# 打包产物
+dist-package/
