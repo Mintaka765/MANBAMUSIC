@@ -42,6 +42,11 @@
   } = $props();
 
   let volumeDragging = $state(false);
+  /** 拖动中的本地预览值：不等后端 400ms 轮询，跟手 */
+  let volumePreview = $state<number | null>(null);
+  let seeking = $state(false);
+  let seekPreview = $state<number | null>(null);
+  let lastVolumeSent = 0;
   let muted = $state(false);
   let lastVolume = 0.8;
 
@@ -53,7 +58,12 @@
       muted = false;
       lastVolume = next;
     }
-    onvolume(next);
+    volumePreview = next;
+    const now = Date.now();
+    if (now - lastVolumeSent > 60) {
+      lastVolumeSent = now;
+      onvolume(next);
+    }
   }
 
   function onVolumeDown(event: PointerEvent) {
@@ -82,6 +92,8 @@
     } catch {
       // 同上
     }
+    if (volumePreview != null) onvolume(volumePreview);
+    setTimeout(() => (volumePreview = null), 350);
   }
 
   function nudge(delta: number) {
@@ -118,12 +130,43 @@
     }
   }
 
-  function seekAt(event: MouseEvent) {
+  function positionAt(clientX: number, element: HTMLElement): number {
+    const rect = element.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    return Math.round(ratio * snapshot.durationMs);
+  }
+
+  function onSeekDown(event: PointerEvent) {
     if (!snapshot.durationMs) return;
-    const target = event.currentTarget as HTMLElement;
-    const rect = target.getBoundingClientRect();
-    const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
-    onseek(Math.round(ratio * snapshot.durationMs));
+    const element = event.currentTarget as HTMLElement;
+    try {
+      element.setPointerCapture(event.pointerId);
+    } catch {
+      // 合成事件忽略
+    }
+    seeking = true;
+    seekPreview = positionAt(event.clientX, element);
+  }
+
+  function onSeekMove(event: PointerEvent) {
+    if (!seeking) return;
+    seekPreview = positionAt(event.clientX, event.currentTarget as HTMLElement);
+  }
+
+  function onSeekUp(event: PointerEvent) {
+    if (!seeking) return;
+    seeking = false;
+    const element = event.currentTarget as HTMLElement;
+    try {
+      if (element.hasPointerCapture(event.pointerId)) {
+        element.releasePointerCapture(event.pointerId);
+      }
+    } catch {
+      // 同上
+    }
+    if (seekPreview != null) onseek(seekPreview);
+    // 兜底：万一后端一直没回来，最多显示 8 秒预览
+    setTimeout(() => (seekPreview = null), 8000);
   }
 
   function seekKey(event: KeyboardEvent) {
@@ -136,9 +179,20 @@
   }
 
 
+  /** 拖动中用预览值，静止时用后端快照 */
+  const shownPosition = $derived(seekPreview ?? snapshot.positionMs);
+  const shownVolume = $derived(volumePreview ?? snapshot.volume);
   const progress = $derived(
-    snapshot.durationMs > 0 ? Math.min(snapshot.positionMs / snapshot.durationMs, 1) : 0,
+    snapshot.durationMs > 0 ? Math.min(shownPosition / snapshot.durationMs, 1) : 0,
   );
+  // 快照追上目标位置就撤掉预览：反向 seek 可能要 1~3 秒，靠固定超时会闪回
+  $effect(() => {
+    if (seeking) return;
+    const target = seekPreview;
+    if (target == null) return;
+    if (Math.abs(snapshot.positionMs - target) < 1500) seekPreview = null;
+  });
+
   const playing = $derived(snapshot.state === 'playing');
   const loading = $derived(snapshot.state === 'loading');
 
@@ -232,19 +286,23 @@
     <div class="seek">
     <div
       class="progress"
+      class:seeking
       role="slider"
       tabindex="0"
       aria-label="播放进度"
       aria-valuemin="0"
       aria-valuemax={snapshot.durationMs}
-      aria-valuenow={snapshot.positionMs}
-      onclick={seekAt}
+      aria-valuenow={shownPosition}
+      onpointerdown={onSeekDown}
+      onpointermove={onSeekMove}
+      onpointerup={onSeekUp}
+      onpointercancel={onSeekUp}
       onkeydown={seekKey}
     >
       <div class="bar"><div class="fill" style:width={`${progress * 100}%`}></div></div>
     </div>
     <span class="time">
-      {format(snapshot.positionMs)} / {format(snapshot.durationMs || track?.durationMs || 0)}
+      {format(shownPosition)} / {format(snapshot.durationMs || track?.durationMs || 0)}
     </span>
     </div>
   </div>
@@ -277,8 +335,8 @@
         onwheel={onVolumeWheel}
       >
         <div class="volume-rail">
-          <div class="volume-fill" style:width={`${snapshot.volume * 100}%`}></div>
-          <div class="volume-thumb" style:left={`${snapshot.volume * 100}%`}></div>
+          <div class="volume-fill" style:width={`${shownVolume * 100}%`}></div>
+          <div class="volume-thumb" style:left={`${shownVolume * 100}%`}></div>
         </div>
       </div>
     {/if}
@@ -658,7 +716,27 @@
 
   .like.on :global(svg) {
     fill: currentColor;
+  }  /* 拖动时去掉缓动，否则指针跟手感被 420ms 过渡拖慢 */
+  .progress.seeking .fill {
+    transition: none;
+  }
+
+  .progress.seeking {
+    cursor: grabbing;
+  }
+
+  .volume-track {
+    cursor: pointer;
+  }
+
+  .volume-track:active {
+    cursor: grabbing;
   }</style>
+
+
+
+
+
 
 
 

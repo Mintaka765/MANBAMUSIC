@@ -10,5 +10,7 @@ license.workspace = true
 rodio = { version = "0.23", default-features = false, features = ["playback", "symphonia-all"] }
 stream-download = "0.24"
 url = "2"
+reqwest.workspace = true
 tokio.workspace = true
 thiserror.workspace = true
+

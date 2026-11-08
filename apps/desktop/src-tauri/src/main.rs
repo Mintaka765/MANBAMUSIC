@@ -1063,7 +1063,14 @@ fn stop_player(state: State<'_, AppState>) {
 
 #[tauri::command]
 fn seek_player(state: State<'_, AppState>, position_ms: u64) {
-    state.player.send(Command::Seek(position_ms));
+    // 留 2 秒尾巴：拖到最末尾会让当前源直接读完，触发 TrackEnded 切下一首
+    let duration = state.player.snapshot().duration_ms;
+    let clamped = if duration > 2000 {
+        position_ms.min(duration - 2000)
+    } else {
+        position_ms
+    };
+    state.player.send(Command::Seek(clamped));
 }
 
 #[tauri::command]

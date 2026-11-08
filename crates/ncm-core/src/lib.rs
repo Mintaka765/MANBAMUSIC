@@ -100,6 +100,8 @@ impl Player {
         }));
 
         let shared = snapshot.clone();
+        // 启动时先裁一次缓存（上限 1GB / 150 首），防止上次异常退出留下超额缓存
+        ncm_audio::prune_cache(&cache_dir);
         std::thread::Builder::new()
             .name("ncm-player".into())
             .spawn(move || audio_loop(cmd_rx, shared, runtime, cache_dir, event_tx))
@@ -208,12 +210,18 @@ fn audio_loop(
         }
     };
 
-    let player = RodioPlayer::connect_new(sink.mixer());
+    let mut player = RodioPlayer::connect_new(sink.mixer());
     if let Ok(volume) = snapshot.lock().map(|s| s.volume) {
         player.set_volume(volume);
     }
 
     let mut duration_ms = 0u64;
+    // 记住当前曲目的直链：反向 seek 不被 symphonia 支持时要重开流
+    let mut current: Option<(String, u64)> = None;
+    // 重开流后 get_pos() 从 0 开始，用它补回真实位置
+    let mut base_ms: u64 = 0;
+    // 当前曲目的本地缓存文件（存在即表示整首已下完、可随机访问）
+    let mut cache_file: Option<std::path::PathBuf> = None;
 
     loop {
         match rx.recv_timeout(Duration::from_millis(100)) {
@@ -231,7 +239,81 @@ fn audio_loop(
                     s.trial_secs = trial_secs;
                 });
                 duration_ms = 0;
+                // 记住直链：反向 seek 不被支持时要用它重开流
+                current = Some((url.clone(), track_id));
+                base_ms = 0;
 
+                // 整首缓存：存在就直接读本地文件（可随机访问，前后拖都瞬时）
+                let cached = ncm_audio::cache_file(&cache_dir, &track_id.to_string());
+                cache_file = Some(cached.clone());
+                if cached.exists() {
+                    ncm_audio::touch_cache(&cached);
+                    match ncm_audio::open_cached(&cached) {
+                        Ok(decoder) => {
+                            duration_ms = decoder
+                                .total_duration()
+                                .map(|d| d.as_millis() as u64)
+                                .unwrap_or(0);
+                            player.stop();
+                            player.append(TrackTap::new(decoder, track_id, events.clone()));
+                            player.play();
+                            update(&|s| {
+                                s.state = PlaybackState::Playing;
+                                s.duration_ms = duration_ms;
+                            });
+                            continue;
+                        }
+                        Err(err) => {
+                            // 缓存文件坏了：删掉重走流式
+                            eprintln!("缓存损坏，重新下载（track {track_id}）: {err}");
+                            let _ = std::fs::remove_file(&cached);
+                        }
+                    }
+                }
+
+                // 渐进缓存：边下边播，已下载的部分可随意前后拖（官方客户端的手感）
+                let progressive =
+                    runtime.block_on(ncm_audio::ProgressiveCache::start(&url, &cached));
+                match progressive {
+                    Ok(cache) => {
+                        match cache.reader().map(Decoder::new) {
+                            Ok(Ok(decoder)) => {
+                                duration_ms = decoder
+                                    .total_duration()
+                                    .map(|d| d.as_millis() as u64)
+                                    .unwrap_or(0);
+                                player.stop();
+                                player.append(TrackTap::new(
+                                    decoder,
+                                    track_id,
+                                    events.clone(),
+                                ));
+                                player.play();
+                                update(&|s| {
+                                    s.state = PlaybackState::Playing;
+                                    s.duration_ms = duration_ms;
+                                });
+                                // 下完后改名成正式缓存，并触发一次淘汰
+                                cache.spawn_finalize();
+                                let prune_root = cache_dir.clone();
+                                std::thread::spawn(move || {
+                                    std::thread::sleep(Duration::from_secs(2));
+                                    ncm_audio::prune_cache(&prune_root);
+                                });
+                                continue;
+                            }
+                            Ok(Err(err)) => {
+                                eprintln!("渐进缓存解码失败，回退流式: {err}");
+                            }
+                            Err(err) => {
+                                eprintln!("渐进缓存读取端失败，回退流式: {err}");
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        eprintln!("渐进缓存不可用，回退流式: {err}");
+                    }
+                }
                 let opened = runtime.block_on(ncm_audio::stream::open(&url, &cache_dir));
                 match opened.map(Decoder::new) {
                     Ok(Ok(decoder)) => {
@@ -293,8 +375,91 @@ fn audio_loop(
                 duration_ms = 0;
             }
             Ok(Command::Seek(position_ms)) => {
-                let _ = player.try_seek(Duration::from_millis(position_ms));
-                update(&|s| s.position_ms = position_ms);
+                match player.try_seek(Duration::from_millis(position_ms)) {
+                    Ok(()) => update(&|s| s.position_ms = position_ms),
+                    Err(error) => {
+                        // symphonia 对网络流只支持前进 seek（反向报
+                        // RandomAccessNotSupported）。这里重开流并丢弃前 position 的采样，
+                        // 用几秒的解码换"能拖回去"的体验。
+                        eprintln!("[seek] 直接 seek 失败 pos={position_ms}ms: {error:?} current={}", current.is_some());
+                        if let Some((url, track_id)) = current.clone() {
+                            let was_paused = player.is_paused();
+                            // 缓存已经下完就直接读本地文件：解码器可随机访问
+                            let cached = cache_file
+                                .as_ref()
+                                .filter(|path| path.exists())
+                                .and_then(|path| match ncm_audio::open_cached(path) {
+                                    Ok(decoder) => Some(decoder),
+                                    Err(err) => {
+                                        eprintln!("[seek] 打开缓存失败: {err}");
+                                        None
+                                    }
+                                });
+
+                            if let Some(decoder) = cached {
+                                if let Some(path) = cache_file.as_ref() {
+                                    ncm_audio::touch_cache(path);
+                                }
+                                let fresh = RodioPlayer::connect_new(sink.mixer());
+                                if let Ok(volume) = snapshot.lock().map(|s| s.volume) {
+                                    fresh.set_volume(volume);
+                                }
+                                let duration = decoder
+                                    .total_duration()
+                                    .map(|value| value.as_millis() as u64)
+                                    .unwrap_or(duration_ms);
+                                fresh.append(TrackTap::new(
+                                    decoder.skip_duration(Duration::from_millis(position_ms)),
+                                    track_id,
+                                    events.clone(),
+                                ));
+                                fresh.play();
+                                if was_paused {
+                                    fresh.pause();
+                                }
+                                player.stop();
+                                player = fresh;
+                                base_ms = position_ms;
+                                update(&|s| {
+                                    s.position_ms = position_ms;
+                                    s.duration_ms = duration;
+                                });
+                                eprintln!("[seek] 用本地缓存跳转完成 pos={position_ms}ms base={base_ms}");
+                            } else {
+                                // 还没下完：重开流 + 丢弃前面的采样
+                                player.stop();
+                                update(&|s| s.state = PlaybackState::Loading);
+                                let opened =
+                                    runtime.block_on(ncm_audio::stream::open(&url, &cache_dir));
+                                match opened.map(Decoder::new) {
+                                    Ok(Ok(decoder)) => {
+                                        let fresh = RodioPlayer::connect_new(sink.mixer());
+                                        if let Ok(volume) = snapshot.lock().map(|s| s.volume) {
+                                            fresh.set_volume(volume);
+                                        }
+                                        fresh.append(TrackTap::new(
+                                            decoder
+                                                .skip_duration(Duration::from_millis(position_ms)),
+                                            track_id,
+                                            events.clone(),
+                                        ));
+                                        fresh.play();
+                                        if was_paused {
+                                            fresh.pause();
+                                        }
+                                        player = fresh;
+                                        base_ms = position_ms;
+                                        update(&|s| {
+                                            s.state = PlaybackState::Playing;
+                                            s.position_ms = position_ms;
+                                        });
+                                    }
+                                    _ => eprintln!("[seek] 重开流失败，保持原位置"),
+                                }
+                            }
+                        }
+                    }
+                }
             }
             Ok(Command::SetVolume(volume)) => {
                 let volume = volume.clamp(0.0, 1.0);
@@ -304,7 +469,7 @@ fn audio_loop(
             Err(RecvTimeoutError::Timeout) => {
                 let playing = !player.empty();
                 let paused = player.is_paused();
-                let position = player.get_pos().as_millis() as u64;
+                let position = base_ms + player.get_pos().as_millis() as u64;
 
                 update(&|s| {
                     if s.state == PlaybackState::Error {
@@ -331,3 +496,5 @@ fn audio_loop(
         }
     }
 }
+
+
