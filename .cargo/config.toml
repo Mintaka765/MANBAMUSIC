@@ -1,0 +1,7 @@
+# 本机环境的两处构建适配（不是项目要求，换机器可删）：
+# 1. lib.exe / cl.exe 在这种受限会话里写系统 %TEMP% 会失败（LNK1104），
+#    把 TMP/TEMP 指到工作区内。
+# 2. aws-lc-sys 的 C 编译带 /Z7 时会报 D8050，已在根 Cargo.toml 关掉它的 debug 信息。
+[env]
+TMP = { value = "E:/Manbamusic/.tmp/tmp", force = true }
+TEMP = { value = "E:/Manbamusic/.tmp/tmp", force = true }

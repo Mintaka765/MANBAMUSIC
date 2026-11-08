@@ -1,0 +1,12 @@
+[package]
+name = "ncm-core"
+description = "业务中枢：播放器 actor（命令通道 + 状态快照）。"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+ncm-audio = { path = "../ncm-audio" }
+rodio = { version = "0.23", default-features = false, features = ["playback", "symphonia-all"] }
+tokio.workspace = true

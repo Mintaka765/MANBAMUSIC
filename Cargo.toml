@@ -1,0 +1,43 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/ncm-api",
+    "crates/ncm-audio",
+    "crates/ncm-core",
+    "crates/ncm-lyrics",
+    "crates/ncm-platform",
+    "apps/cli",
+    "apps/desktop/src-tauri",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.95"
+license = "MIT OR Apache-2.0"
+
+# aws-lc-sys 的 C 编译在带 /Z7 时会因为超长命令行报 D8050，
+# 这个包也不需要调试信息。
+[profile.dev.package.aws-lc-sys]
+debug = false
+
+[profile.release.package.aws-lc-sys]
+debug = false
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+thiserror = "2"
+base64 = "0.22"
+hex = "0.4"
+aes = "0.8"
+cbc = "0.1"
+ecb = "0.1"
+cipher = { version = "0.4", features = ["alloc"] }
+md-5 = "0.10"
+rand = "0.8"
+num-bigint = "0.4"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+

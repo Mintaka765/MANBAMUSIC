@@ -1,0 +1,7 @@
+[package]
+name = "ncm-lyrics"
+description = "歌词解析：LRC / YRC（逐字）/ 翻译合并。纯函数，无 IO。"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true

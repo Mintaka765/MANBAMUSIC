@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Manbamusic</title>
+    <script>
+      // 首帧防闪：同步读上次的主题缓存，先把 CSS 变量写上去，
+      // 挂载后再以 store 的状态为准（两者一致时等于没变化）。
+      (function () {
+        try {
+          var raw = localStorage.getItem('mbm-theme');
+          if (!raw) return;
+          var theme = JSON.parse(raw);
+          if (!theme || !theme.tokens) return;
+          var root = document.documentElement;
+          root.dataset.theme = theme.id || '';
+          if (theme.colorScheme) {
+            root.dataset.scheme = theme.colorScheme;
+            root.style.colorScheme = theme.colorScheme;
+          }
+          for (var key in theme.tokens) {
+            if (Object.prototype.hasOwnProperty.call(theme.tokens, key)) {
+              root.style.setProperty('--' + key, theme.tokens[key]);
+            }
+          }
+        } catch (error) {
+          /* 缓存坏了就用默认主题 */
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

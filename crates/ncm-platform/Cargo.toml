@@ -1,0 +1,10 @@
+[package]
+name = "ncm-platform"
+description = "系统集成：媒体键 / 系统媒体面板（souvlaki）。"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+souvlaki = "0.9"

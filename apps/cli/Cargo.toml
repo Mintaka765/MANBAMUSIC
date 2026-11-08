@@ -1,0 +1,16 @@
+[package]
+name = "ncm-cli"
+description = "无 UI 的协议层验证工具：能搜歌、取直链、拿歌词就说明协议层通了。"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "ncm-cli"
+path = "src/main.rs"
+
+[dependencies]
+ncm-api = { path = "../../crates/ncm-api" }
+ncm-audio = { path = "../../crates/ncm-audio" }
+tokio.workspace = true

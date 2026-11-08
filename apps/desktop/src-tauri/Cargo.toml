@@ -1,0 +1,26 @@
+[package]
+name = "manbamusic-desktop"
+description = "Tauri 外壳：只做窗口、IPC 桥接与状态装配。"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+serde.workspace = true
+serde_json.workspace = true
+ncm-api = { path = "../../../crates/ncm-api" }
+ncm-core = { path = "../../../crates/ncm-core" }
+ncm-lyrics = { path = "../../../crates/ncm-lyrics" }
+ncm-platform = { path = "../../../crates/ncm-platform" }
+tokio = { version = "1", features = ["rt-multi-thread"] }
+
+
+[features]
+# 打包/脱离 dev server 运行时启用：把 ../dist 的静态资源嵌进二进制
+custom-protocol = ["tauri/custom-protocol"]
+

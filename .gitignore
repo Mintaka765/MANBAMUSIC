@@ -1,0 +1,20 @@
+target/
+.tmp/
+*.log
+.DS_Store
+
+# 前端
+node_modules/
+.npm-cache/
+dist/
+
+.superdesign/tmp/
+
+# 本地记忆与会话日志
+.dsh-meow/
+
+# 交接文档只留本地，不进公开仓库
+AGENTS.md
+
+# 设计工具本地元数据
+.superdesign/

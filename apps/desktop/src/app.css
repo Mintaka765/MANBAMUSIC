@@ -1,0 +1,129 @@
+:root {
+  /* 默认主题（午夜黑胶），切换主题时会被 :root 内联变量覆盖 */
+  --bg: #0c0b0a;
+  --surface-1: #141210;
+  --surface-2: #1c1917;
+  --surface-3: #262220;
+  --text: #f2ede4;
+  --text-dim: #a79e93;
+  --text-faint: #6e655c;
+  --accent: #e2703a;
+  --accent-contrast: #160b06;
+  --danger: #d9534a;
+  --warning: #c9a227;
+  --border: rgba(242, 237, 228, 0.08);
+  --border-strong: rgba(242, 237, 228, 0.16);
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-2: 0 24px 60px rgba(0, 0, 0, 0.55);
+  --blur: 18px;
+  --player-h: 76px;
+  --sidebar-w: 248px;
+  --font-ui: 'Segoe UI Variable Text', 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', system-ui, -apple-system, sans-serif;
+  --font-display: var(--font-ui);
+  --font-mono: var(--font-ui);
+  --font-lyric: var(--font-ui);
+  --lyric-text: #ffffff;
+  --lyric-shadow: 0 2px 12px rgba(0, 0, 0, 0.9), 0 0 2px rgba(0, 0, 0, 0.95);
+
+  color-scheme: dark;
+  font-family: var(--font-ui);
+  color: var(--text);
+  background: var(--bg);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* 环境底色：固定到视口的两段极淡强调色光晕，只做深度，不做装饰 */
+body {
+  background-color: var(--bg);
+  background-image:
+    radial-gradient(1200px 680px at 14% -12%, color-mix(in srgb, var(--accent) 7%, transparent), transparent 64%),
+    radial-gradient(900px 520px at 104% 4%, color-mix(in srgb, var(--accent) 4%, transparent), transparent 58%);
+  background-attachment: fixed;
+  background-repeat: no-repeat;
+  transition: background-color 220ms ease;
+}
+
+#app {
+  position: relative;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* 桌面歌词窗：整个页面透明，只留文字和阴影。
+   :root 上有主题底色，所以 html 也要一起置为透明，否则窗口是不透明的。 */
+html.lyrics-window,
+body.lyrics-window {
+  background: transparent;
+  background-image: none;
+}
+
+body.lyrics-window #app {
+  display: block;
+}
+
+button {
+  font-family: inherit;
+}
+
+/* 数字一律等宽；标题一律衬线 */
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.serif {
+  font-family: var(--font-display);
+}
+
+::selection {
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+/* 尊重系统"减少动态效果"设置：关掉所有动画和过渡 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-faint);
+  background-clip: content-box;
+}
+
+
+
+
+
+
