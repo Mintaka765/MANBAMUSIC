@@ -8,12 +8,22 @@
     currentId = null,
     playing = true,
     onplay,
+    onselect,
   }: {
     tracks: Track[];
     currentId?: number | null;
     playing?: boolean;
     onplay: (track: Track, index: number) => void;
+    onselect?: (track: Track, index: number) => void;
   } = $props();
+
+  /** 单击只选中（给右键菜单留位置），双击才播放 */
+  let selectedId = $state<number | null>(null);
+
+  function select(track: Track, index: number) {
+    selectedId = track.id;
+    onselect?.(track, index);
+  }
 
   /** 行高 = 64px（含底部发丝线）。虚拟滚动依赖它精确，改样式要同步改这里。 */
   const ROW_H = 60;
@@ -65,12 +75,13 @@
     return () => observer.disconnect();
   });
 
-  // 换歌单 / 换搜索结果时回到顶部
+  // 换歌单 / 换搜索结果时清空选中并回到顶部
   $effect(() => {
     void tracks;
     if (viewport && viewport.scrollTop !== 0) {
       viewport.scrollTop = 0;
     }
+    selectedId = null;
     scrollTop = 0;
   });
 </script>
@@ -81,13 +92,17 @@
       <ul class="tracks" style:transform={`translateY(${start * ROW_H}px)`}>
         {#each visible as track, offset (track.id)}
           {@const index = start + offset}
-          <li class:active={track.id === currentId}>
+          <li class:active={track.id === currentId} class:selected={track.id === selectedId}>
             <button
               class="row"
               class:animated={animate && index < 24}
               class:paused={!playing}
               style:--i={Math.min(index, 12)}
-              onclick={() => onplay(track, index)}
+              onclick={() => select(track, index)}
+              ondblclick={() => onplay(track, index)}
+              onkeydown={(event) => {
+                if (event.key === 'Enter') onplay(track, index);
+              }}
             >
               <span class="index">
                 {#if track.id === currentId}
@@ -187,6 +202,15 @@
 
   .row:hover {
     background: var(--surface-2);
+  }
+
+  /* 单击选中态：比 hover 轻，且不与"正在播放"抢强调 */
+  li.selected:not(.active) .row {
+    background: color-mix(in srgb, var(--text) 5%, transparent);
+  }
+
+  li.selected:not(.active) .title {
+    color: var(--text);
   }
 
   li.active .row {
