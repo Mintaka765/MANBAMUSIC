@@ -18,9 +18,13 @@ ncm-core = { path = "../../../crates/ncm-core" }
 ncm-lyrics = { path = "../../../crates/ncm-lyrics" }
 ncm-platform = { path = "../../../crates/ncm-platform" }
 tokio = { version = "1", features = ["rt-multi-thread"] }
+lofty = "0.22"
+walkdir = "2"
+rfd = "0.15"
 
 
 [features]
 # 打包/脱离 dev server 运行时启用：把 ../dist 的静态资源嵌进二进制
 custom-protocol = ["tauri/custom-protocol"]
+
 

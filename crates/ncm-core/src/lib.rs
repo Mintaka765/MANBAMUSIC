@@ -38,6 +38,11 @@ pub enum Command {
     Pause,
     Resume,
     Stop,
+    /// 播放本地文件：不走网络与缓存
+    PlayLocal {
+        path: String,
+        track_id: u64,
+    },
     Seek(u64),
     SetVolume(f32),
 }
@@ -276,7 +281,10 @@ fn audio_loop(
                     runtime.block_on(ncm_audio::ProgressiveCache::start(&url, &cached));
                 match progressive {
                     Ok(cache) => {
-                        match cache.reader().map(Decoder::new) {
+                        match cache.reader().map(|reader| {
+                            let len = reader.total();
+                            ncm_audio::decoder_seekable(reader, len)
+                        }) {
                             Ok(Ok(decoder)) => {
                                 duration_ms = decoder
                                     .total_duration()
@@ -339,6 +347,39 @@ fn audio_loop(
                     }),
                 }
             }
+            Ok(Command::PlayLocal { path, track_id }) => {
+                update(&|s| {
+                    s.state = PlaybackState::Loading;
+                    s.error = None;
+                    s.position_ms = 0;
+                    s.duration_ms = 0;
+                    s.track_id = Some(track_id);
+                    s.trial_secs = None;
+                });
+                duration_ms = 0;
+                current = None;
+                base_ms = 0;
+
+                match ncm_audio::open_local(std::path::Path::new(&path)) {
+                    Ok(decoder) => {
+                        duration_ms = decoder
+                            .total_duration()
+                            .map(|value| value.as_millis() as u64)
+                            .unwrap_or(0);
+                        player.stop();
+                        player.append(TrackTap::new(decoder, track_id, events.clone()));
+                        player.play();
+                        update(&|s| {
+                            s.state = PlaybackState::Playing;
+                            s.duration_ms = duration_ms;
+                        });
+                    }
+                    Err(err) => update(&|s| {
+                        s.state = PlaybackState::Error;
+                        s.error = Some(format!("打不开本地文件: {err}"));
+                    }),
+                }
+            }
             Ok(Command::Enqueue { url, track_id }) => {
                 // 预挂载：只 append，不 stop，所以当前这首不会被打断。
                 let opened = runtime.block_on(ncm_audio::stream::open(&url, &cache_dir));
@@ -375,6 +416,7 @@ fn audio_loop(
                 duration_ms = 0;
             }
             Ok(Command::Seek(position_ms)) => {
+                // 本地文件也走同一条 try_seek：解码器带了 byte_len，symphonia 才认随机访问
                 match player.try_seek(Duration::from_millis(position_ms)) {
                     Ok(()) => update(&|s| s.position_ms = position_ms),
                     Err(error) => {

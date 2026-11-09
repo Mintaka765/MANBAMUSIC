@@ -11,6 +11,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use ncm_api::{endpoints, Client, Playlist, Song, UserProfile};
+
+mod local;
 use ncm_core::{Command, Event, PlaybackState, Player};
 use ncm_platform::{MediaCommand, MediaHandle, MediaRequest, MediaTrack};
 use serde::{Deserialize, Serialize};
@@ -163,6 +165,9 @@ struct Settings {
     level: String,
     /// 关闭窗口时最小化到托盘而不是退出
     close_to_tray: bool,
+    /// 本地音乐扫描目录
+    #[serde(default)]
+    local_folders: Vec<String>,
 }
 
 impl Default for Settings {
@@ -170,6 +175,7 @@ impl Default for Settings {
         Self {
             level: "exhigh".into(),
             close_to_tray: false,
+            local_folders: Vec::new(),
         }
     }
 }
@@ -347,6 +353,9 @@ struct TrackLite {
     cover_url: Option<String>,
     duration_ms: u64,
     fee: i64,
+    /// 本地曲目才有：文件绝对路径
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
 }
 
 impl From<Song> for TrackLite {
@@ -359,6 +368,7 @@ impl From<Song> for TrackLite {
             cover_url: song.cover_url,
             duration_ms: song.duration_ms,
             fee: song.fee,
+            path: None,
         }
     }
 }
@@ -483,6 +493,15 @@ async fn play_at(state: &AppState, position: usize) -> Result<(), String> {
     };
     // 位置已经确定，先记一笔，避免播到一半退出丢进度
     persist_state(state);
+
+    // 本地曲目直接读文件，不走网络与缓存
+    if let Some(path) = track.path.clone() {
+        state.player.send(Command::PlayLocal {
+            path,
+            track_id: track.id,
+        });
+        return Ok(());
+    }
 
     let url = resolve_url(state, track.id).await?;
     let trial_secs = state
@@ -929,15 +948,99 @@ fn get_settings(state: State<'_, AppState>) -> Settings {
 
 #[tauri::command]
 fn save_settings(state: State<'_, AppState>, settings: Settings) -> Result<Settings, String> {
+    let folders = state
+        .settings
+        .lock()
+        .map(|current| current.local_folders.clone())
+        .unwrap_or_default();
     let clean = Settings {
         level: normalize_level(&settings.level),
         close_to_tray: settings.close_to_tray,
+        local_folders: folders,
     };
     if let Ok(mut current) = state.settings.lock() {
         *current = clean.clone();
     }
     store_settings(&clean).map_err(|error| error.to_string())?;
     Ok(clean)
+}
+
+// ---------------------------------------------------------------------------
+// 本地音乐
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+fn local_folders(state: State<'_, AppState>) -> Vec<String> {
+    state
+        .settings
+        .lock()
+        .map(|settings| settings.local_folders.clone())
+        .unwrap_or_default()
+}
+
+/// 弹系统文件夹选择框；选完就存进 settings。
+#[tauri::command]
+async fn add_local_folder(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    let picked =
+        tauri::async_runtime::spawn_blocking(|| rfd::FileDialog::new().set_title("选择音乐文件夹").pick_folder())
+            .await
+            .map_err(|error| error.to_string())?;
+
+    let Some(folder) = picked else {
+        // 用户取消：原样返回
+        return Ok(local_folders(state));
+    };
+    let folder = folder.to_string_lossy().to_string();
+
+    let mut folders = {
+        let mut settings = state.settings.lock().map_err(|_| "设置锁失败")?;
+        if !settings.local_folders.iter().any(|known| known == &folder) {
+            settings.local_folders.push(folder);
+        }
+        settings.clone()
+    };
+    folders.level = normalize_level(&folders.level);
+    store_settings(&folders).map_err(|error| error.to_string())?;
+    Ok(folders.local_folders)
+}
+
+#[tauri::command]
+fn remove_local_folder(state: State<'_, AppState>, path: String) -> Result<Vec<String>, String> {
+    let mut settings = state.settings.lock().map_err(|_| "设置锁失败")?.clone();
+    settings.local_folders.retain(|known| known != &path);
+    store_settings(&settings).map_err(|error| error.to_string())?;
+    if let Ok(mut current) = state.settings.lock() {
+        *current = settings.clone();
+    }
+    Ok(settings.local_folders)
+}
+
+/// 扫描已选的目录，返回曲目列表（读标签在阻塞线程里做）。
+#[tauri::command]
+async fn scan_local(state: State<'_, AppState>) -> Result<Vec<TrackLite>, String> {
+    let folders = local_folders(state);
+    if folders.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let outcome = tauri::async_runtime::spawn_blocking(move || local::scan(&folders))
+        .await
+        .map_err(|error| error.to_string())?;
+
+    Ok(outcome
+        .tracks
+        .into_iter()
+        .map(|track| TrackLite {
+            id: track.id,
+            name: track.name,
+            artists: track.artists,
+            album: track.album,
+            cover_url: None,
+            duration_ms: track.duration_ms,
+            fee: 0,
+            path: Some(track.path),
+        })
+        .collect())
 }
 
 /// 开始漫游（私人 FM）：先取几批凑一个起始队列，之后播到队尾自动续。
@@ -1599,6 +1702,10 @@ fn main() {
             queue_state,
             queue_items,
             daily_songs,
+            local_folders,
+            add_local_folder,
+            remove_local_folder,
+            scan_local,
             play_radio,
             radar_tracks,
             get_settings,

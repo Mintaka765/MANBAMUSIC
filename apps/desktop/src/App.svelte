@@ -26,7 +26,11 @@
     playlistTracks,
     playQueue,
     previousTrack,
+    addLocalFolder,
     dailySongs,
+    localFolders,
+    removeLocalFolder,
+    scanLocal,
     playRadio,
     radarTracks,
     queueState,
@@ -220,6 +224,10 @@
   let dailyCache: { date: string; tracks: Track[] } | null = null;
   /** 私人雷达当次会话内不重复拉（歌单每天更新，重开应用才刷新） */
   let radarCache: Track[] | null = null;
+  /** 本地音乐 */
+  let localDirs = $state<string[]>([]);
+  let localScanning = $state(false);
+  let localCache: Track[] | null = null;
 
   function todayKey() {
     const now = new Date();
@@ -305,6 +313,28 @@
       return;
     }
 
+    if (key === 'local') {
+      error = null;
+      searched = true;
+      listTitle = '本地音乐';
+      try {
+        localDirs = await localFolders();
+        if (localDirs.length === 0) {
+          tracks = [];
+          localCache = [];
+          return;
+        }
+        if (localCache) {
+          tracks = localCache;
+          return;
+        }
+        await rescanLocal();
+      } catch (cause) {
+        error = cause instanceof Error ? cause.message : String(cause);
+      }
+      return;
+    }
+
     if (key !== 'library') return;
     try {      const lists = await myPlaylists();
       // 官方「我喜欢的音乐」specialType=5；账号里可能有多张历史遗留，取曲目最多的那张
@@ -315,6 +345,50 @@
         lists.find((item) => item.name === '我喜欢的音乐') ??
         lists[0];
       if (liked) await openPlaylist(liked);
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : String(cause);
+    }
+  }
+
+  /** 本地音乐：重新扫描 */
+  async function rescanLocal() {
+    localScanning = true;
+    listLoading = true;
+    try {
+      const list = await scanLocal();
+      localCache = list;
+      tracks = list;
+      listTitle = `本地音乐`;
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      localScanning = false;
+      listLoading = false;
+    }
+  }
+
+  /** 本地音乐：添加目录 */
+  async function pickLocalFolder() {
+    try {
+      localDirs = await addLocalFolder();
+      localCache = null;
+      if (localDirs.length > 0) await rescanLocal();
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : String(cause);
+    }
+  }
+
+  /** 本地音乐：移除目录 */
+  async function dropLocalFolder(dir: string) {
+    try {
+      localDirs = await removeLocalFolder(dir);
+      localCache = null;
+      if (localDirs.length > 0) {
+        await rescanLocal();
+      } else {
+        tracks = [];
+        localCache = [];
+      }
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause);
     }
@@ -571,6 +645,22 @@
   <main class="main">
 
     <section class="content">
+      {#if active === 'local'}
+        <div class="local-bar">
+          <button class="local-action" onclick={pickLocalFolder}>添加文件夹</button>
+          {#if localDirs.length > 0}
+            <button class="local-action" onclick={rescanLocal} disabled={localScanning}>
+              {localScanning ? '扫描中…' : '重新扫描'}
+            </button>
+            {#each localDirs as dir (dir)}
+              <button class="local-chip" title={`移除 ${dir}`} onclick={() => dropLocalFolder(dir)}>
+                {dir.split(/[\\/]/).filter(Boolean).pop() ?? dir}
+                <span class="chip-x">×</span>
+              </button>
+            {/each}
+          {/if}
+        </div>
+      {/if}
       {#if error}
         <div class="empty error">
           <p>出了点问题</p>
@@ -600,8 +690,13 @@
         </div>
       {:else if tracks.length === 0}
         <div class="empty">
-          <p>没找到「{query}」</p>
-          <p class="dim">换个关键词试试</p>
+          {#if active === 'local'}
+            <p>本地音乐还是空的</p>
+            <p class="dim">点上面的「添加文件夹」选一个音乐目录，支持 mp3 / flac / m4a / wav 等。</p>
+          {:else}
+            <p>没找到「{query}」</p>
+            <p class="dim">换个关键词试试</p>
+          {/if}
         </div>
       {:else}
         <p class="result-count">{listTitle} · {tracks.length} 首</p>
@@ -819,7 +914,8 @@
     flex: 1;
     min-height: 0;
     overflow: hidden;
-    padding: 8px 24px 24px;
+    /* 顶部留出 34px 标题栏浮层，否则前 34px 的点击会被浮层吃掉 */
+    padding: 34px 24px 24px;
     display: flex;
     flex-direction: column;
   }
@@ -1173,7 +1269,7 @@
   }
 
   .content {
-    padding: 8px 0 0;
+    padding: 34px 0 0;
   }  /* ===== 播放条从侧栏右侧开始：侧栏通到底 ===== */
   .shell {
     grid-template-columns: var(--sidebar-w, 248px) 1fr;
@@ -1357,6 +1453,63 @@
     50% {
       opacity: 1;
     }
+  }  /* 本地音乐工具条 */
+  .local-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin: 0 0 4px;
+    padding: 0 0 8px;
+  }
+
+  .local-action {
+    height: 30px;
+    padding: 0 14px;
+    border: none;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--text) 8%, transparent);
+    color: var(--text);
+    font-size: 12.5px;
+    font-weight: 500;
+    cursor: pointer;
+  }
+
+  .local-action:hover {
+    background: color-mix(in srgb, var(--text) 13%, transparent);
+  }
+
+  .local-action:disabled {
+    opacity: 0.55;
+    cursor: default;
+  }
+
+  .local-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 26px;
+    padding: 0 8px 0 10px;
+    border: none;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--text-dim);
+    font-size: 12px;
+    cursor: pointer;
+    max-width: 200px;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .local-chip:hover {
+    background: color-mix(in srgb, var(--text) 7%, transparent);
+    color: var(--text);
+  }
+
+  .chip-x {
+    font-size: 13px;
+    opacity: 0.6;
   }</style>
 
 

@@ -106,9 +106,24 @@ pub async fn download_to_cache(url: &str, dest: &Path) -> Result<(), AudioError>
 }
 
 /// 打开本地缓存文件（可 Seek，symphonia 能随机访问）。
+pub fn decoder_seekable<R>(data: R, byte_len: u64) -> Result<Decoder<R>, AudioError>
+where
+    R: std::io::Read + std::io::Seek + Send + Sync + 'static,
+{
+    Decoder::builder()
+        .with_data(data)
+        .with_byte_len(byte_len)
+        .build()
+        .map_err(AudioError::Decode)
+}
+
 pub fn open_cached(path: &Path) -> Result<Decoder<std::io::BufReader<std::fs::File>>, AudioError> {
     let file = std::fs::File::open(path).map_err(|err| AudioError::Stream(err.to_string()))?;
-    Decoder::new(std::io::BufReader::new(file)).map_err(AudioError::Decode)
+    let len = file
+        .metadata()
+        .map_err(|err| AudioError::Stream(err.to_string()))?
+        .len();
+    decoder_seekable(std::io::BufReader::new(file), len)
 }
 
 /// 缓存上限：1 GB 或 150 首，先到哪个算哪个。
@@ -162,6 +177,14 @@ pub fn prune_cache_with(cache_dir: &Path, max_bytes: u64, max_files: usize) {
     }
 }
 
+/// 打开本地文件用于播放：走可随机访问的读取端，前后拖都可用。
+pub fn open_local(path: &Path) -> Result<Decoder<progressive::CacheReader>, AudioError> {
+    let reader = progressive::ProgressiveCache::open_complete(path)?;
+    let len = reader.total();
+    decoder_seekable(reader, len)
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -192,3 +215,5 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 }
+
+

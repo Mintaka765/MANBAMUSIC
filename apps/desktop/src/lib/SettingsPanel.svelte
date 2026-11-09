@@ -19,7 +19,7 @@
     { value: 'lossless', label: '无损', hint: 'FLAC，需要会员' },
   ];
 
-  let settings = $state<AppSettings>({ level: 'exhigh', closeToTray: false });
+  let settings = $state<AppSettings>({ level: 'exhigh', closeToTray: false, localFolders: [] });
   let saving = $state(false);
 
   $effect(() => {

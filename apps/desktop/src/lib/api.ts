@@ -157,7 +157,7 @@ export async function jumpTo(index: number): Promise<void> {
   if (isDesktop) await invoke('jump_to', { index });
 }
 export async function getSettings(): Promise<AppSettings> {
-  if (!isDesktop) return { level: 'exhigh', closeToTray: false };
+  if (!isDesktop) return { level: 'exhigh', closeToTray: false, localFolders: [] };
   return invoke<AppSettings>('get_settings');
 }
 
@@ -165,6 +165,30 @@ export async function saveSettings(settings: AppSettings): Promise<AppSettings> 
   if (!isDesktop) return settings;
   return invoke<AppSettings>('save_settings', { settings });
 }
+/** 本地音乐：已选目录。 */
+export async function localFolders(): Promise<string[]> {
+  if (!isDesktop) return [];
+  return invoke<string[]>('local_folders');
+}
+
+/** 本地音乐：弹系统文件夹选择框，返回更新后的目录列表。 */
+export async function addLocalFolder(): Promise<string[]> {
+  if (!isDesktop) return [];
+  return invoke<string[]>('add_local_folder');
+}
+
+/** 本地音乐：移除某个目录。 */
+export async function removeLocalFolder(path: string): Promise<string[]> {
+  if (!isDesktop) return [];
+  return invoke<string[]>('remove_local_folder', { path });
+}
+
+/** 本地音乐：扫描目录，返回曲目（含 path 字段）。 */
+export async function scanLocal(): Promise<Track[]> {
+  if (!isDesktop) return [];
+  return invoke<Track[]>('scan_local');
+}
+
 /** 每日推荐（未登录时后端会返回空数组或报错）。 */
 export async function dailySongs(): Promise<Track[]> {
   if (!isDesktop) return [];

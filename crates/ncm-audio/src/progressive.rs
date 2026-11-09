@@ -146,6 +146,11 @@ impl ProgressiveCache {
         })
     }
 
+    /// 总字节数（给了 byte_len，解码器才允许随机访问）。
+    pub fn total(&self) -> u64 {
+        self.total
+    }
+
     /// 造一个"读到未下载区域就等"的随机访问视图。
     pub fn reader(&self) -> Result<CacheReader, AudioError> {
         let file = std::fs::File::open(&self.path)
@@ -174,6 +179,11 @@ pub struct CacheReader {
 }
 
 impl CacheReader {
+    /// 总字节数（解码器需要它才允许随机访问）。
+    pub fn total(&self) -> u64 {
+        self.total
+    }
+
     fn wait_for(&self, need: u64) -> std::io::Result<()> {
         loop {
             let downloaded = self
@@ -258,5 +268,28 @@ impl ProgressiveCache {
             }
             std::thread::sleep(Duration::from_millis(300));
         });
+    }
+}
+
+impl ProgressiveCache {
+    /// 直接给一个「已完整」的本地文件造读取端：长度已知、数据全在，
+    /// 于是 symphonia 能随机访问（本地音乐的前后拖就靠它）。
+    pub fn open_complete(path: &Path) -> Result<CacheReader, AudioError> {
+        let file = std::fs::File::open(path).map_err(|err| AudioError::Stream(err.to_string()))?;
+        let total = file
+            .metadata()
+            .map_err(|err| AudioError::Stream(err.to_string()))?
+            .len();
+        let state = Arc::new(Progress::new());
+        if let Ok(mut downloaded) = state.downloaded.lock() {
+            *downloaded = total;
+        }
+        state.finish(None);
+        Ok(CacheReader {
+            file,
+            pos: 0,
+            total,
+            state,
+        })
     }
 }

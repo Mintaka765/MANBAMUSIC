@@ -9,6 +9,8 @@ export interface Track {
   durationMs: number;
   /** 0=免费 1=VIP 8=低音质免费 */
   fee: number;
+  /** 本地曲目才有：文件绝对路径（线上曲目为 undefined） */
+  path?: string;
 }
 
 /** 与 Rust 侧 `PlayerSnapshotDto` 对齐。 */
@@ -62,6 +64,8 @@ export type AudioLevel = 'standard' | 'higher' | 'exhigh' | 'lossless';
 export interface AppSettings {
   level: AudioLevel;
   closeToTray: boolean;
+  /** 本地音乐扫描目录 */
+  localFolders: string[];
 }
 
 /** 与 Rust 侧 `QueueDto` 对齐。 */
