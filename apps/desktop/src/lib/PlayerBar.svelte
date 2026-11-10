@@ -12,8 +12,7 @@
     onresume,
     onnext,
     onprevious,
-    onrepeat,
-    onshuffle,
+    onmode,
     onlyrics,
     onopen,
     onseek,
@@ -30,8 +29,7 @@
     onresume: () => void;
     onnext: () => void;
     onprevious: () => void;
-    onrepeat: () => void;
-    onshuffle: () => void;
+    onmode: () => void;
     onlyrics: () => void;
     onopen: () => void;
     onseek: (ms: number) => void;
@@ -257,21 +255,15 @@
 
     <button
       class="icon mode"
-      class:on={repeat !== 'off'}
-      aria-label="循环模式"
-      title={repeat === 'one' ? '单曲循环' : repeat === 'all' ? '列表循环' : '不循环'}
-      onclick={onrepeat}
+      class:on={shuffle || repeat !== 'off'}
+      aria-label={shuffle ? '随机播放' : repeat === 'one' ? '单曲循环' : repeat === 'all' ? '列表循环' : '顺序播放'}
+      title={shuffle ? '随机播放' : repeat === 'one' ? '单曲循环' : repeat === 'all' ? '列表循环' : '顺序播放'}
+      onclick={onmode}
     >
-      <Icon name={repeat === 'one' ? 'repeatOne' : 'repeat'} size={16} />
-    </button>
-    <button
-      class="icon mode"
-      class:on={shuffle}
-      aria-label="随机播放"
-      title={shuffle ? '随机开启' : '随机关闭'}
-      onclick={onshuffle}
-    >
-      <Icon name="shuffle" size={16} />
+      <Icon
+        name={shuffle ? 'shuffle' : repeat === 'one' ? 'repeatOne' : 'repeat'}
+        size={16}
+      />
     </button>
 
     <button class="icon mode" aria-label="桌面歌词" title="桌面歌词" onclick={onlyrics}>

@@ -452,20 +452,36 @@
     }
   }
 
-  async function cycleRepeat() {
-    const next = repeat === 'off' ? 'all' : repeat === 'all' ? 'one' : 'off';
-    try {
-      const queue = await setRepeat(next);
-      if (queue) repeat = queue.repeat;
-    } catch (cause) {
-      error = cause instanceof Error ? cause.message : String(cause);
-    }
+  type PlayMode = 'off' | 'all' | 'one' | 'shuffle';
+
+  /** 把「循环模式 + 随机」合成一个四态：顺序 → 列表循环 → 单曲循环 → 随机 */
+  function currentMode(): PlayMode {
+    if (shuffle) return 'shuffle';
+    if (repeat === 'one') return 'one';
+    if (repeat === 'all') return 'all';
+    return 'off';
   }
 
-  async function flipShuffle() {
+  async function cyclePlayMode() {
+    const order: PlayMode[] = ['off', 'all', 'one', 'shuffle'];
+    const next = order[(order.indexOf(currentMode()) + 1) % order.length];
     try {
-      const queue = await toggleShuffle(!shuffle);
-      if (queue) shuffle = queue.shuffle;
+      if (next === 'shuffle') {
+        // 随机播放按「列表循环」的语义走：一轮放完继续随机，不会停
+        await toggleShuffle(true);
+        const queue = await setRepeat('all');
+        if (queue) {
+          repeat = queue.repeat;
+          shuffle = queue.shuffle;
+        }
+      } else {
+        await toggleShuffle(false);
+        const queue = await setRepeat(next);
+        if (queue) {
+          repeat = queue.repeat;
+          shuffle = queue.shuffle;
+        }
+      }
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause);
     }
@@ -711,7 +727,7 @@
   </main>
 
   {#if current}
-    <Lyrics {lyric} positionMs={snapshot.positionMs} />
+    <Lyrics {lyric} positionMs={snapshot.positionMs} onseek={seek} />
   {/if}
 
   <div class="player-slot">
@@ -724,8 +740,8 @@
       onresume={() => resumePlayer()}
       onnext={() => step('next')}
       onprevious={() => step('previous')}
-      onrepeat={cycleRepeat}
-      onshuffle={flipShuffle}
+      onmode={cyclePlayMode}
+      
       onlyrics={flipLyrics}
       onopen={() => (stageOpen = true)}
       onseek={seek}
@@ -760,8 +776,8 @@
     ontoggle={togglePlay}
     onnext={() => step('next')}
     onprevious={() => step('previous')}
-    onrepeat={cycleRepeat}
-    onshuffle={flipShuffle}
+    onmode={cyclePlayMode}
+    
     onvolume={(volume) => setVolume(volume)}
   />
 {/if}

@@ -882,9 +882,11 @@ fn set_repeat(state: State<'_, AppState>, mode: String) -> QueueDto {
 
 #[tauri::command]
 async fn toggle_shuffle(state: State<'_, AppState>, enabled: bool) -> Result<QueueDto, String> {
-    let (current, position) = {
+    let (current, position, changed) = {
         let mut queue = state.queue.lock().map_err(|_| "队列锁失败")?;
         let current_track = queue.current_id();
+        // 随机开关没变（只是在切循环模式）就不该碰播放
+        let changed = queue.shuffle != enabled;
         queue.shuffle = enabled;
         queue.pending = None;
 
@@ -907,12 +909,23 @@ async fn toggle_shuffle(state: State<'_, AppState>, enabled: bool) -> Result<Que
                 .unwrap_or(0);
         }
 
-        (queue.current_id(), queue.position)
+        (queue.current_id(), queue.position, changed)
     };
 
-    // 顺序变了，重新给当前这首挂下一首
-    if current.is_some() {
-        let _ = play_at(&state, position).await;
+    // 顺序变了：当前这首不能重来。记下进度与播放状态，重挂后跳回原位置。
+    if changed && current.is_some() {
+        let snapshot = state.player.snapshot();
+        let resume_ms = snapshot.position_ms;
+        let was_paused = snapshot.state == PlaybackState::Paused;
+
+        if play_at(&state, position).await.is_ok() {
+            if resume_ms > 0 {
+                state.player.send(Command::Seek(resume_ms));
+            }
+            if was_paused {
+                state.player.send(Command::Pause);
+            }
+        }
     }
     persist_state(&state);
     Ok(queue_state(state))
@@ -1117,6 +1130,75 @@ fn queue_items(state: State<'_, AppState>) -> QueueItemsDto {
 #[tauri::command]
 async fn jump_to(state: State<'_, AppState>, index: usize) -> Result<(), String> {
     play_at(&state, index).await
+}
+
+/// 拖动待播清单调整播放顺序。
+///
+/// 只改 `order`；如果「下一首」因此变了，就把预挂载重新对齐（当前曲不重来，
+/// 记下进度后重挂并 Seek 回去）。
+#[tauri::command]
+async fn move_queue_item(
+    state: State<'_, AppState>,
+    from: usize,
+    to: usize,
+) -> Result<QueueDto, String> {
+    let (current, position, next_changed) = {
+        let mut queue = state.queue.lock().map_err(|_| "队列锁失败")?;
+        let len = queue.order.len();
+        if from >= len || to >= len {
+            return Err("待播清单下标越界".into());
+        }
+        if from == to {
+            drop(queue);
+            return Ok(queue_state(state));
+        }
+
+        let current_id = queue.current_id();
+        let next_before = queue
+            .next_position()
+            .and_then(|p| queue.track_at(p).map(|t| t.id));
+
+        let item = queue.order.remove(from);
+        queue.order.insert(to, item);
+
+        if let Some(track_id) = current_id {
+            if let Some(index) = queue
+                .order
+                .iter()
+                .position(|value| queue.tracks.get(*value).map(|t| t.id) == Some(track_id))
+            {
+                queue.position = index;
+            }
+        }
+
+        let next_after = queue
+            .next_position()
+            .and_then(|p| queue.track_at(p).map(|t| t.id));
+        let next_changed = next_before != next_after;
+        if next_changed {
+            // 预挂载的那首已经不对了，下面重新挂
+            queue.pending = None;
+        }
+
+        (current_id, queue.position, next_changed)
+    };
+
+    if next_changed && current.is_some() {
+        let snapshot = state.player.snapshot();
+        let resume_ms = snapshot.position_ms;
+        let was_paused = snapshot.state == PlaybackState::Paused;
+        if play_at(&state, position).await.is_ok() {
+            if resume_ms > 0 {
+                state.player.send(Command::Seek(resume_ms));
+            }
+            if was_paused {
+                state.player.send(Command::Pause);
+            }
+        }
+    }
+
+    persist_state(&state);
+    Ok(queue_state(state))
 }
 
 #[tauri::command]
@@ -1711,6 +1793,7 @@ fn main() {
             get_settings,
             save_settings,
             jump_to,
+            move_queue_item,
             set_repeat,
             toggle_shuffle,
             player_snapshot,

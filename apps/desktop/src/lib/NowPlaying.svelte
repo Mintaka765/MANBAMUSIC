@@ -15,8 +15,7 @@
     ontoggle,
     onnext,
     onprevious,
-    onrepeat,
-    onshuffle,
+    onmode,
     onvolume,
   }: {
     track: Track;
@@ -29,8 +28,7 @@
     ontoggle: () => void;
     onnext: () => void;
     onprevious: () => void;
-    onrepeat: () => void;
-    onshuffle: () => void;
+    onmode: () => void;
     onvolume: (volume: number) => void;
   } = $props();
 
@@ -209,9 +207,6 @@
       </div>
 
       <div class="controls">
-        <button class="icon" class:on={shuffle} aria-label="随机播放" onclick={onshuffle}>
-          <Icon name="shuffle" size={18} />
-        </button>
         <button class="icon" aria-label="上一首" onclick={onprevious}>
           <Icon name="prev" size={20} />
         </button>
@@ -225,8 +220,13 @@
         <button class="icon" aria-label="下一首" onclick={onnext}>
           <Icon name="next" size={20} />
         </button>
-        <button class="icon" class:on={repeat !== 'off'} aria-label="循环模式" onclick={onrepeat}>
-          <Icon name={repeat === 'one' ? 'repeatOne' : 'repeat'} size={18} />
+        <button
+          class="icon"
+          class:on={shuffle || repeat !== 'off'}
+          aria-label={shuffle ? '随机播放' : repeat === 'one' ? '单曲循环' : repeat === 'all' ? '列表循环' : '顺序播放'}
+          onclick={onmode}
+        >
+          <Icon name={shuffle ? 'shuffle' : repeat === 'one' ? 'repeatOne' : 'repeat'} size={18} />
         </button>
       </div>
 
@@ -262,7 +262,7 @@
     </div>
 
     <div class="right">
-      <Lyrics {lyric} positionMs={snapshot.positionMs} variant="stage" />
+      <Lyrics {lyric} positionMs={snapshot.positionMs} variant="stage" onseek={onseek} />
     </div>
   </div>
 </section>
