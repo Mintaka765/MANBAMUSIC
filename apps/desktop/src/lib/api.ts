@@ -156,6 +156,11 @@ export async function queueItems(): Promise<QueueItems> {
 export async function jumpTo(index: number): Promise<void> {
   if (isDesktop) await invoke('jump_to', { index });
 }
+
+/** 调整待播清单顺序：把第 from 项移动到第 to 项。 */
+export async function moveQueueItem(from: number, to: number): Promise<QueueState> {
+  return invoke<QueueState>('move_queue_item', { from, to });
+}
 export async function getSettings(): Promise<AppSettings> {
   if (!isDesktop) return { level: 'exhigh', closeToTray: false, localFolders: [] };
   return invoke<AppSettings>('get_settings');

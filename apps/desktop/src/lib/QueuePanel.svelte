@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { coverUrl, jumpTo, queueItems } from './api';
+  import { coverUrl, jumpTo, moveQueueItem, queueItems } from './api';
   import type { Track } from './types';
 
   let {
@@ -23,6 +23,12 @@
   let scrollTop = $state(0);
   let viewportH = $state(600);
   let jumping = $state<number | null>(null);
+  /** 拖动排序状态 */
+  let dragIndex = $state<number | null>(null);
+  let dropTarget = $state<number | null>(null);
+  let dragging = $state(false);
+  let suppressClick = false;
+  let dragStartY = 0;
 
   const total = $derived(tracks.length);
   const start = $derived(Math.max(0, Math.floor(scrollTop / ROW_H) - OVERSCAN));
@@ -79,6 +85,78 @@
     }
   }
 
+  /** 拖动排序：pointer 事件 + 插入位置线，虚拟列表里按绝对下标算 */
+  function onRowPointerDown(event: PointerEvent, index: number) {
+    if (event.button !== 0) return;
+    dragIndex = index;
+    dragStartY = event.clientY;
+    dragging = false;
+    try {
+      viewport?.setPointerCapture(event.pointerId);
+    } catch {
+      // 合成事件没有真实 pointerId
+    }
+  }
+
+  function onPointerMove(event: PointerEvent) {
+    if (dragIndex == null || !viewport) return;
+    const delta = event.clientY - dragStartY;
+    if (!dragging && Math.abs(delta) < 5) return;
+    dragging = true;
+
+    const rect = viewport.getBoundingClientRect();
+    const y = event.clientY - rect.top + viewport.scrollTop;
+    dropTarget = Math.max(0, Math.min(total, Math.round(y / ROW_H)));
+
+    // 靠近上下边缘时自动滚动，不然拖不进视口外的地方
+    const edge = 30;
+    const offset = event.clientY - rect.top;
+    if (offset < edge) viewport.scrollTop -= 10;
+    else if (rect.height - offset < edge) viewport.scrollTop += 10;
+  }
+
+  async function onPointerUp(event: PointerEvent) {
+    if (dragIndex == null) return;
+    const from = dragIndex;
+    dragIndex = null;
+    try {
+      viewport?.releasePointerCapture(event.pointerId);
+    } catch {
+      // 同上
+    }
+    if (!dragging) return;
+
+    suppressClick = true;
+    const target = dropTarget ?? from;
+    dropTarget = null;
+    dragging = false;
+
+    // 插入位置在目标行之前；往后拖要减一
+    let to = target > from ? target - 1 : target;
+    to = Math.max(0, Math.min(total - 1, to));
+    if (to === from) return;
+
+    try {
+      await moveQueueItem(from, to);
+      await refresh();
+    } catch {
+      // 失败保持原状
+    }
+    setTimeout(() => (suppressClick = false), 0);
+  }
+
+  /** 键盘也能调整顺序 */
+  async function nudge(index: number, delta: number) {
+    const to = index + delta;
+    if (to < 0 || to >= total) return;
+    try {
+      await moveQueueItem(index, to);
+      await refresh();
+    } catch {
+      // 忽略
+    }
+  }
+
   function formatDuration(ms: number): string {
     const second = Math.floor(ms / 1000);
     return `${Math.floor(second / 60)}:${String(second % 60).padStart(2, '0')}`;
@@ -98,13 +176,46 @@
       <p class="dim">点歌单或搜索里的任意一首开始播放</p>
     </div>
   {:else}
-    <div class="viewport" bind:this={viewport} onscroll={(event) => (scrollTop = event.currentTarget.scrollTop)}>
+    <div
+      class="viewport"
+      class:dragging
+      bind:this={viewport}
+      onscroll={(event) => (scrollTop = event.currentTarget.scrollTop)}
+      onpointermove={onPointerMove}
+      onpointerup={onPointerUp}
+      onpointercancel={onPointerUp}
+    >
       <div class="spacer" style:height={`${total * ROW_H}px`}>
+        {#if dragging && dropTarget !== null}
+          <div class="drop-line" style:top={`${dropTarget * ROW_H}px`}></div>
+        {/if}
         <ul style:transform={`translateY(${start * ROW_H}px)`}>
           {#each visible as track, offset (track.id)}
             {@const index = start + offset}
-            <li class:current={index === position}>
-              <button class="row" onclick={() => jump(index)} title={track.name}>
+            <li
+              class:current={index === position}
+              class:dragging={dragging && dragIndex === index}
+              class:drop-before={dragging && dropTarget === index}
+            >
+              <button
+                class="row"
+                title={track.name}
+                onpointerdown={(event) => onRowPointerDown(event, index)}
+                onclick={() => {
+                  if (suppressClick) return;
+                  jump(index);
+                }}
+                onkeydown={(event) => {
+                  if (!event.altKey) return;
+                  if (event.key === 'ArrowUp') {
+                    event.preventDefault();
+                    void nudge(index, -1);
+                  } else if (event.key === 'ArrowDown') {
+                    event.preventDefault();
+                    void nudge(index, 1);
+                  }
+                }}
+              >
                 <span class="index">
                   {#if index === position}
                     <span class="eq" aria-label="正在播放"><i></i><i></i><i></i></span>
@@ -361,4 +472,38 @@
     font-size: 12px;
     color: var(--text-faint);
   }
-</style>
+  /* ===== 拖动排序 ===== */
+  .viewport.dragging {
+    cursor: grabbing;
+    user-select: none;
+  }
+
+  li.dragging .row {
+    opacity: 0.55;
+  }
+
+  li.drop-before .row {
+    box-shadow: inset 0 2px 0 var(--accent);
+  }
+
+  .drop-line {
+    position: absolute;
+    left: 14px;
+    right: 14px;
+    height: 2px;
+    border-radius: 2px;
+    background: var(--accent);
+    pointer-events: none;
+    z-index: 2;
+  }
+
+  .drop-line::before {
+    content: '';
+    position: absolute;
+    left: -3px;
+    top: -2px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+  }</style>
