@@ -5,14 +5,74 @@
     lyric,
     positionMs,
     variant = 'panel',
+    onseek,
   }: {
     lyric: LyricTrack | null;
     positionMs: number;
     variant?: 'panel' | 'stage';
+    onseek?: (ms: number) => void;
   } = $props();
 
   let container = $state<HTMLDivElement | null>(null);
+  /** 是否跟随播放自动滚动；用户手动滚动后暂停一会儿 */
+  let following = $state(true);
+  let resumeTimer: ReturnType<typeof setTimeout> | null = null;
+
   const lines = $derived(lyric?.lines ?? []);
+
+  function pauseFollowing() {
+    following = false;
+    if (resumeTimer) clearTimeout(resumeTimer);
+    resumeTimer = setTimeout(() => {
+      following = true;
+    }, 5000);
+  }
+
+  function resumeFollowing() {
+    following = true;
+    if (resumeTimer) {
+      clearTimeout(resumeTimer);
+      resumeTimer = null;
+    }
+  }
+
+  /** 拖动滚动：只用 pointer 事件改 scrollTop，和自动跟随互斥 */
+  let dragging = false;
+  let moved = false;
+  let dragStartY = 0;
+  let dragStartTop = 0;
+
+  function onPointerDown(event: PointerEvent) {
+    if (!container || event.button !== 0) return;
+    dragging = true;
+    moved = false;
+    dragStartY = event.clientY;
+    dragStartTop = container.scrollTop;
+  }
+
+  function onPointerMove(event: PointerEvent) {
+    if (!dragging || !container) return;
+    const delta = event.clientY - dragStartY;
+    if (Math.abs(delta) > 3) moved = true;
+    if (!moved) return;
+    pauseFollowing();
+    container.scrollTop = dragStartTop - delta;
+  }
+
+  function onPointerUp() {
+    dragging = false;
+    // 让点击处理先看到 moved，再复位
+    setTimeout(() => (moved = false), 0);
+  }
+
+  /** 点歌词行 = 跳到这一句 */
+  function chooseLine(index: number) {
+    if (moved) return;
+    const line = lines[index];
+    if (!line) return;
+    onseek?.(line.startMs);
+    resumeFollowing();
+  }
 
   // 与 Rust 侧同一个二分：找到最后一个 startMs <= position 的行
   const activeIndex = $derived.by(() => {
@@ -34,7 +94,7 @@
 
   $effect(() => {
     const index = activeIndex;
-    if (!container || index < 0) return;
+    if (!container || index < 0 || !following) return;
     const element = container.querySelector<HTMLElement>(`[data-line="${index}"]`);
     if (!element) return;
 
@@ -53,18 +113,44 @@
     {#if lyric?.hasYrc}<span class="tag">逐字</span>{/if}
   </header>
 
-  <div class="lines" bind:this={container}>
+  <div
+    class="lines"
+    class:dragging
+    bind:this={container}
+    onpointerdown={onPointerDown}
+    onpointermove={onPointerMove}
+    onpointerup={onPointerUp}
+    onpointercancel={onPointerUp}
+    onwheel={pauseFollowing}
+  >
     {#if lines.length === 0}
       <p class="empty">暂无歌词</p>
     {:else}
       {#each lines as line, index (index)}
-        <p class:active={index === activeIndex} data-line={index}>
+        <p
+          class:active={index === activeIndex}
+          data-line={index}
+          role="button"
+          tabindex="0"
+          title="跳到这一句"
+          onclick={() => chooseLine(index)}
+          onkeydown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              chooseLine(index);
+            }
+          }}
+        >
           <span class="text">{line.text}</span>
           {#if line.translation}<span class="trans">{line.translation}</span>{/if}
         </p>
       {/each}
     {/if}
   </div>
+
+  {#if !following && lines.length > 0}
+    <button class="resume" onclick={resumeFollowing}>回到当前</button>
+  {/if}
 </aside>
 
 <style>
@@ -235,6 +321,63 @@
     letter-spacing: 0.06em;
     color: var(--accent);
     border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  }  /* ===== 歌词交互：可拖动、可点击跳转 ===== */
+  .lyrics {
+    position: relative;
+  }
+
+  .lines {
+    cursor: grab;
+    user-select: none;
+  }
+
+  .lines.dragging {
+    cursor: grabbing;
+  }
+
+  .lines.dragging p {
+    pointer-events: none;
+  }
+
+  .lines p[role='button'] {
+    cursor: pointer;
+    transition:
+      color 160ms ease,
+      transform 160ms ease,
+      opacity 160ms ease;
+  }
+
+  .lines p[role='button']:hover {
+    color: var(--text);
+  }
+
+  .lines p:active {
+    opacity: 0.7;
+  }
+
+  /* 手动滚动后出现的「回到当前」 */
+  .resume {
+    position: absolute;
+    left: 50%;
+    bottom: 14px;
+    transform: translateX(-50%);
+    height: 28px;
+    padding: 0 14px;
+    border: none;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--text) 12%, transparent);
+    color: var(--text);
+    font-size: 12px;
+    cursor: pointer;
+    backdrop-filter: none;
+  }
+
+  .resume:hover {
+    background: color-mix(in srgb, var(--text) 18%, transparent);
+  }
+
+  .lyrics.stage .resume {
+    bottom: 18px;
   }</style>
 
 

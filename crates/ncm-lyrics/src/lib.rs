@@ -167,18 +167,65 @@ pub fn parse_yrc(raw: &str) -> LyricTrack {
     }
 }
 
-/// 把翻译轨合并进主轨（按行起点匹配，容忍 ±120ms 的抖动）。
+/// 主轨与翻译轨时间戳允许的偏差。
+///
+/// 实测翻译轨和主歌词经常不是同一份时间轴：同一句会差几百毫秒甚至 1.4 秒
+/// （例：Lemon 最大 851ms、夜に駆ける 1430ms）。窗口太小会让这些句子显示成
+/// 「没有翻译」。
+const TRANSLATION_TOLERANCE_MS: u64 = 1_500;
+
+/// 把翻译轨合并进主轨：按时间取最近的一句，且一句翻译只匹配一次。
 pub fn merge_translation(track: &mut LyricTrack, translation: &LyricTrack) {
-    for line in &mut track.lines {
-        if let Some(found) = translation
-            .lines
-            .iter()
-            .find(|other| other.start_ms.abs_diff(line.start_ms) <= 120)
-        {
-            if !found.text.trim().is_empty() {
-                line.translation = Some(found.text.clone());
+    if translation.lines.is_empty() {
+        return;
+    }
+
+    // 行数相同说明两边是同一份歌词的两种时间轴（逐字轨和翻译轨经常差几百毫秒），
+    // 直接按顺序对齐最稳，不依赖时间戳。
+    if translation.lines.len() == track.lines.len() {
+        for (line, other) in track.lines.iter_mut().zip(translation.lines.iter()) {
+            let text = other.text.trim();
+            if !text.is_empty() && text != line.text.trim() {
+                line.translation = Some(text.to_string());
             }
         }
+        return;
+    }
+
+    let mut used = vec![false; translation.lines.len()];
+
+    for line in &mut track.lines {
+        // 候选只可能是插入点两侧的两句（翻译轨按时间有序）
+        let at = translation
+            .lines
+            .partition_point(|other| other.start_ms < line.start_ms);
+
+        let mut best: Option<(usize, u64)> = None;
+        for index in [at.saturating_sub(1), at] {
+            let Some(other) = translation.lines.get(index) else {
+                continue;
+            };
+            if used[index] {
+                continue;
+            }
+            let delta = other.start_ms.abs_diff(line.start_ms);
+            if delta > TRANSLATION_TOLERANCE_MS {
+                continue;
+            }
+            if best.is_none_or(|(_, previous)| delta < previous) {
+                best = Some((index, delta));
+            }
+        }
+
+        let Some((index, _)) = best else {
+            continue;
+        };
+        let text = translation.lines[index].text.trim();
+        if text.is_empty() || text == line.text.trim() {
+            continue;
+        }
+        used[index] = true;
+        line.translation = Some(text.to_string());
     }
 }
 
@@ -321,5 +368,58 @@ mod tests {
         let trans = parse_lrc("[00:10.080]Hello");
         merge_translation(&mut main, &trans);
         assert_eq!(main.lines[0].translation.as_deref(), Some("Hello"));
+    }
+}
+
+#[cfg(test)]
+mod translation_tests {
+    use super::*;
+
+    #[test]
+    fn matches_large_timestamp_drift() {
+        let mut main = parse_lrc("[00:10.000]你好");
+        let trans = parse_lrc("[00:10.851]Hello");
+        merge_translation(&mut main, &trans);
+        assert_eq!(main.lines[0].translation.as_deref(), Some("Hello"));
+    }
+
+    #[test]
+    fn does_not_match_beyond_tolerance() {
+        // 行数不同才走时间匹配：这句翻译离得太远，不该贴上去
+        let mut main = parse_lrc("[00:10.000]你好\n[00:20.000]第二句");
+        let trans = parse_lrc("[00:30.000]Far away");
+        merge_translation(&mut main, &trans);
+        assert!(main.lines.iter().all(|line| line.translation.is_none()));
+    }
+
+    #[test]
+    fn equal_counts_align_by_index() {
+        // 逐字轨与翻译轨行数相同但时间戳差很多，应按顺序对齐
+        let mut main = parse_lrc("[00:10.000]第一句\n[00:20.000]第二句");
+        let trans = parse_lrc("[00:10.500]First\n[00:23.400]Second");
+        merge_translation(&mut main, &trans);
+        assert_eq!(main.lines[0].translation.as_deref(), Some("First"));
+        assert_eq!(main.lines[1].translation.as_deref(), Some("Second"));
+    }
+
+    #[test]
+    fn translation_is_not_reused() {
+        let mut main = parse_lrc("[00:10.000]a\n[00:10.900]b");
+        let trans = parse_lrc("[00:10.400]only one");
+        merge_translation(&mut main, &trans);
+        let used = main
+            .lines
+            .iter()
+            .filter(|line| line.translation.is_some())
+            .count();
+        assert_eq!(used, 1, "一句翻译只能贴到一行");
+    }
+
+    #[test]
+    fn identical_text_is_skipped() {
+        let mut main = parse_lrc("[00:10.000]same");
+        let trans = parse_lrc("[00:10.000]same");
+        merge_translation(&mut main, &trans);
+        assert!(main.lines[0].translation.is_none());
     }
 }
