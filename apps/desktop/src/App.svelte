@@ -448,7 +448,12 @@
       if (direction === 'next') await nextTrack();
       else await previousTrack();
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : String(cause);
+      const message = cause instanceof Error ? cause.message : String(cause);
+      error = message;
+      // 切歌失败（比如目标曲目不可播）提示几秒后自动消失，别一直挡住列表
+      setTimeout(() => {
+        if (error === message) error = null;
+      }, 6000);
     }
   }
 

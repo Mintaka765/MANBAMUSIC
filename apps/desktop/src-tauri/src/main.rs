@@ -104,18 +104,6 @@ impl QueueState {
         }
     }
 
-    fn previous_position(&self) -> Option<usize> {
-        if self.order.is_empty() {
-            return None;
-        }
-        if self.position > 0 {
-            Some(self.position - 1)
-        } else if self.repeat == RepeatMode::All {
-            Some(self.order.len() - 1)
-        } else {
-            None
-        }
-    }
 }
 
 struct AppState {
@@ -470,11 +458,12 @@ async fn resolve_full(state: &AppState, id: u64) -> Result<(String, Option<u64>)
 
 /// 播放队列里第 `position` 首，并预挂载下一首（重复单曲除外）。
 async fn play_at(state: &AppState, position: usize) -> Result<(), String> {
-    let (track, followed_by) = {
+    let (track, followed_by, previous_position) = {
         let mut queue = state.queue.lock().map_err(|_| "队列锁失败")?;
         if position >= queue.order.len() {
             return Err("队列里没有这一首".into());
         }
+        let previous_position = queue.position;
         queue.position = position;
 
         let track = queue.track_at(position).cloned();
@@ -485,7 +474,7 @@ async fn play_at(state: &AppState, position: usize) -> Result<(), String> {
                 .next_position()
                 .and_then(|next| queue.track_at(next).cloned().map(|t| (next, t)))
         };
-        (track, followed_by)
+        (track, followed_by, previous_position)
     };
 
     let Some(track) = track else {
@@ -503,7 +492,18 @@ async fn play_at(state: &AppState, position: usize) -> Result<(), String> {
         return Ok(());
     }
 
-    let url = resolve_url(state, track.id).await?;
+    let url = match resolve_url(state, track.id).await {
+        Ok(url) => url,
+        Err(error) => {
+            // 取不到直链（下架 / VIP / 版权限制）：把队列位置退回上一首，
+            // 界面继续显示正在播的那首，同时把错误抛给前端提示用户。
+            if let Ok(mut queue) = state.queue.lock() {
+                queue.position = previous_position;
+            }
+            persist_state(state);
+            return Err(error);
+        }
+    };
     let trial_secs = state
         .url_cache
         .lock()
@@ -689,6 +689,7 @@ async fn previous_track(state: State<'_, AppState>) -> Result<(), String> {
 }
 
 async fn advance(state: &AppState) -> Result<(), String> {
+    // 漫游：到队尾就补一批
     let (position, radio) = {
         let mut queue = state.queue.lock().map_err(|_| "队列锁失败")?;
         queue.pending = None;
@@ -700,18 +701,33 @@ async fn advance(state: &AppState) -> Result<(), String> {
         };
         (position, radio)
     };
-    match position {
-        Some(position) => play_at(state, position).await,
-        None => {
-            // 漫游模式到队尾：再取一批接着放（私人 FM 是流，没有"最后一首"）
-            if !radio {
-                return Ok(());
-            }
-            match refill_radio(state).await? {
-                Some(next) => play_at(state, next).await,
-                None => Ok(()),
-            }
-        }
+    if radio && position.is_none() {
+        return match refill_radio(state).await? {
+            Some(next) => play_at(state, next).await,
+            None => Ok(()),
+        };
+    }
+    let Some(position) = position else {
+        return Ok(());
+    };
+
+    // 遇到不可播的曲目就直接报错，让用户知道，不自动跳过
+    play_at(state, position).await
+}
+
+/// 从 `position` 往前（按循环语义）找上一个下标。
+fn previous_index(state: &AppState, position: usize) -> Option<usize> {
+    let queue = state.queue.lock().ok()?;
+    let len = queue.order.len();
+    if len == 0 {
+        return None;
+    }
+    if position > 0 {
+        Some(position - 1)
+    } else if queue.repeat != RepeatMode::Off {
+        Some(len - 1)
+    } else {
+        None
     }
 }
 
@@ -746,13 +762,14 @@ async fn refill_radio(state: &AppState) -> Result<Option<usize>, String> {
 }
 
 async fn rewind(state: &AppState) -> Result<(), String> {
-    let position = {
+    // 上一首不可播时直接报错（让用户知道），不自动往前跳过
+    let previous = {
         let mut queue = state.queue.lock().map_err(|_| "队列锁失败")?;
         queue.pending = None;
-        queue.previous_position()
+        queue.position
     };
-    match position {
-        Some(position) => play_at(state, position).await,
+    match previous_index(state, previous) {
+        Some(previous) => play_at(state, previous).await,
         None => Ok(()),
     }
 }
