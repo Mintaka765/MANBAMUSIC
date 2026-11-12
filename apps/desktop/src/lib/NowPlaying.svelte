@@ -16,6 +16,8 @@
     onnext,
     onprevious,
     onmode,
+    onalbum,
+    onartist,
     onvolume,
   }: {
     track: Track;
@@ -29,6 +31,10 @@
     onnext: () => void;
     onprevious: () => void;
     onmode: () => void;
+    /** 打开专辑页 */
+    onalbum?: () => void;
+    /** 点歌手名进歌手页 */
+    onartist?: (id: number) => void;
     onvolume: (volume: number) => void;
   } = $props();
 
@@ -166,22 +172,49 @@
 
   <div class="body">
     <div class="left">
-      {#if coverUrl(track.coverUrl, 600)}
-        <img
-          class="cover"
-          src={coverUrl(track.coverUrl, 600)}
-          alt={track.album}
-          loading="lazy"
-          decoding="async"
-        />
+      {#if track.albumId && onalbum}
+        <button class="cover-button" title="查看专辑" onclick={onalbum}>
+          {#if coverUrl(track.coverUrl, 600)}
+            <img
+              class="cover"
+              src={coverUrl(track.coverUrl, 600)}
+              alt={track.album}
+              loading="lazy"
+              decoding="async"
+            />
+          {:else}
+            <div class="cover placeholder">{track.name.slice(0, 1)}</div>
+          {/if}
+        </button>
+      {:else if coverUrl(track.coverUrl, 600)}
+        <img class="cover" src={coverUrl(track.coverUrl, 600)} alt={track.album} loading="lazy" decoding="async" />
       {:else}
         <div class="cover placeholder">{track.name.slice(0, 1)}</div>
       {/if}
 
       <h1 class="title">{track.name}</h1>
       <p class="meta">
-        {track.artists.join(' / ')}
-        {#if track.album}· {track.album}{/if}
+        {#each track.artists as artist, index (index)}
+          {#if index > 0}<span class="sep"> / </span>{/if}
+          {#if onartist && track.artistIds?.[index]}
+            <span
+              class="artist-link"
+              role="link"
+              tabindex="-1"
+              onclick={() => onartist(track.artistIds?.[index] ?? 0)}
+            >{artist}</span>
+          {:else}
+            {artist}
+          {/if}
+        {/each}
+        {#if track.album}
+          ·
+          {#if track.albumId && onalbum}
+            <span class="album-link" role="link" tabindex="-1" onclick={onalbum}>{track.album}</span>
+          {:else}
+            {track.album}
+          {/if}
+        {/if}
       </p>
 
       <div
@@ -714,6 +747,30 @@
 
   .bar.seeking {
     cursor: grabbing;
+  }  .cover-button {
+    display: block;
+    padding: 0;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    border-radius: 14px;
+    overflow: hidden;
+  }
+
+  .cover-button:hover .cover {
+    filter: brightness(1.04);
+  }
+
+  .album-link,
+  .artist-link {
+    cursor: pointer;
+  }
+
+  .album-link:hover,
+  .artist-link:hover {
+    color: var(--text);
+    text-decoration: underline;
+    text-underline-offset: 2px;
   }</style>
 
 

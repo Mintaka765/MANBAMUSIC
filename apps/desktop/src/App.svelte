@@ -4,6 +4,7 @@
   import QRCode from 'qrcode';
   import Lyrics from './lib/Lyrics.svelte';
   import Icon from './lib/Icon.svelte';
+  import ArtistView from './lib/ArtistView.svelte';
   import NowPlaying from './lib/NowPlaying.svelte';
   import PlayerBar from './lib/PlayerBar.svelte';
   import SearchBar from './lib/SearchBar.svelte';
@@ -13,6 +14,10 @@
   import TrackList from './lib/TrackList.svelte';
   import { themeStore } from './lib/theme/store.svelte';
   import {
+    albumDetail,
+    artistAlbums,
+    artistDetail,
+    coverUrl,
     getLyric,
     loginQrPoll,
     loginQrStart,
@@ -44,7 +49,16 @@
     toggleLyrics,
     toggleShuffle,
   } from './lib/api';
-  import type { LyricTrack, PlayerSnapshot, Playlist, Track, UserProfile } from './lib/types';
+  import type {
+    AlbumDetail,
+    ArtistAlbum,
+    ArtistDetail,
+    LyricTrack,
+    PlayerSnapshot,
+    Playlist,
+    Track,
+    UserProfile,
+  } from './lib/types';
 
   let query = $state('');
   let tracks = $state<Track[]>([]);
@@ -53,6 +67,22 @@
   let error = $state<string | null>(null);
   let searched = $state(false);
   let current = $state<Track | null>(null);
+  /** 页面栈：专辑 / 歌手可以互相进入，返回逐层退 */
+  type NavEntry =
+    | { kind: 'album'; album: AlbumDetail }
+    | {
+        kind: 'artist';
+        artist: ArtistDetail;
+        albums: ArtistAlbum[] | null;
+        loadingAlbums: boolean;
+        tab: 'songs' | 'albums';
+      };
+  let pages = $state<NavEntry[]>([]);
+  let navLoading = $state(false);
+  let baseView = $state<{ tracks: Track[]; title: string; active: string } | null>(null);
+  const albumCache = new Map<number, AlbumDetail>();
+  const artistCache = new Map<number, ArtistDetail>();
+  const top = $derived(pages.length > 0 ? pages[pages.length - 1] : null);
   /** 已喜欢的曲目 id；红心状态以服务端为准，本地只做乐观更新 */
   let likedIds = $state<Set<number>>(new Set());
 
@@ -207,6 +237,7 @@
 
   async function runSearch() {
     if (!query.trim()) return;
+    resetPages();
     loading = true;
     error = null;
     try {
@@ -262,9 +293,138 @@
     }
   }
 
+  function rememberBase() {
+    if (pages.length === 0) {
+      baseView = { tracks, title: listTitle, active };
+    }
+  }
+
+  function showAlbum(album: AlbumDetail) {
+    tracks = album.tracks;
+    listTitle = `专辑 · ${album.name}`;
+    searched = true;
+  }
+
+  function showArtist(artist: ArtistDetail) {
+    tracks = artist.hotSongs;
+    listTitle = `歌手 · ${artist.name}`;
+    searched = true;
+  }
+
+  /** 打开专辑页（入口：曲目专辑列、播放页、专辑页里的专辑卡片） */
+  async function openAlbumById(id: number) {
+    rememberBase();
+    error = null;
+    const cached = albumCache.get(id);
+    if (cached) {
+      pages.push({ kind: 'album', album: cached });
+      showAlbum(cached);
+      return;
+    }
+    navLoading = true;
+    try {
+      const detail = await albumDetail(id);
+      albumCache.set(id, detail);
+      pages.push({ kind: 'album', album: detail });
+      showAlbum(detail);
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      navLoading = false;
+    }
+  }
+
+  function openAlbum(track: Track) {
+    if (!track.albumId) return;
+    void openAlbumById(track.albumId);
+  }
+
+  /** 打开歌手页（入口：歌手名、播放页） */
+  async function openArtist(id: number) {
+    if (!id) return;
+    rememberBase();
+    error = null;
+    const cached = artistCache.get(id);
+    if (cached) {
+      pages.push({
+        kind: 'artist',
+        artist: cached,
+        albums: null,
+        loadingAlbums: false,
+        tab: 'songs',
+      });
+      showArtist(cached);
+      return;
+    }
+    navLoading = true;
+    try {
+      const detail = await artistDetail(id);
+      artistCache.set(id, detail);
+      pages.push({
+        kind: 'artist',
+        artist: detail,
+        albums: null,
+        loadingAlbums: false,
+        tab: 'songs',
+      });
+      showArtist(detail);
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      navLoading = false;
+    }
+  }
+
+  /** 返回上一层：专辑 → 歌手 → 列表 */
+  function backNav() {
+    pages.pop();
+    const entry = pages[pages.length - 1];
+    if (entry?.kind === 'album') {
+      showAlbum(entry.album);
+    } else if (entry?.kind === 'artist') {
+      showArtist(entry.artist);
+    } else if (baseView) {
+      tracks = baseView.tracks;
+      listTitle = baseView.title;
+      active = baseView.active;
+      baseView = null;
+    }
+  }
+
+  async function playAlbumOf(album: AlbumDetail) {
+    if (album.tracks.length > 0) await play(album.tracks[0], 0);
+  }
+
+  async function playArtistOf(artist: ArtistDetail) {
+    if (artist.hotSongs.length > 0) await play(artist.hotSongs[0], 0);
+  }
+
+  /** 歌手页切 Tab；专辑列表首次进入才拉 */
+  async function switchArtistTab(tab: 'songs' | 'albums') {
+    const entry = pages[pages.length - 1];
+    if (!entry || entry.kind !== 'artist') return;
+    entry.tab = tab;
+    if (tab === 'songs') {
+      showArtist(entry.artist);
+      return;
+    }
+    if (entry.albums !== null) return;
+    entry.loadingAlbums = true;
+    try {
+      const data = await artistAlbums(entry.artist.id, 30, 0);
+      entry.albums = data.albums;
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      entry.loadingAlbums = false;
+    }
+  }
+
   /** 侧栏导航：发现音乐 → 每日推荐；我的音乐 → 我喜欢的音乐 */
   async function selectNav(key: string) {
     active = key;
+    pages = [];
+    baseView = null;
     if (key === 'discover') {
       await loadDaily();
       return;
@@ -409,7 +569,14 @@
       .finally(() => prefetching.delete(id));
   }
 
+  /** 切到顶层视图时清空专辑 / 歌手页面栈 */
+  function resetPages() {
+    pages = [];
+    baseView = null;
+  }
+
   async function openPlaylist(playlist: Playlist) {
+    resetPages();
     error = null;
     listTitle = `歌单 · ${playlist.name}`;
     // 先切视图，别让用户对着旧列表干等
@@ -666,6 +833,64 @@
   <main class="main">
 
     <section class="content">
+      {#if top?.kind === 'album'}
+        <div class="album-head">
+          <button class="album-back" aria-label="返回" title="返回" onclick={backNav}>←</button>
+          {#if coverUrl(top.album.coverUrl, 300)}
+            <img
+              class="album-cover"
+              src={coverUrl(top.album.coverUrl, 300)}
+              alt=""
+              loading="lazy"
+              decoding="async"
+            />
+          {:else}
+            <div class="album-cover placeholder">♪</div>
+          {/if}
+          <div class="album-info">
+            <p class="album-kind">专辑</p>
+            <h1 class="album-name">{top.album.name}</h1>
+            <p class="album-artists">
+              {#each top.album.artists as artist, index (index)}
+                {#if index > 0}<span class="artist-sep"> / </span>{/if}
+                {#if top.album.artistIds[index]}
+                  <span
+                    class="artist-link"
+                    role="link"
+                    tabindex="-1"
+                    onclick={() => openArtist(top.album.artistIds[index])}
+                  >{artist}</span>
+                {:else}
+                  {artist}
+                {/if}
+              {/each}
+            </p>
+            <p class="album-meta">
+              {top.album.publishMs ? new Date(top.album.publishMs).getFullYear() : ''}
+              {top.album.publishMs ? ' · ' : ''}{tracks.length} 首
+              {#if top.album.company}· {top.album.company}{/if}
+            </p>
+          </div>
+          <button class="album-play" onclick={() => playAlbumOf(top.album)}>播放全部</button>
+        </div>
+      {:else if top?.kind === 'artist'}
+        <ArtistView
+          artist={top.artist}
+          albums={top.albums}
+          tab={top.tab}
+          loadingAlbums={top.loadingAlbums}
+          currentId={current?.id ?? null}
+          playing={snapshot.state === 'playing'}
+          onback={backNav}
+          ontab={switchArtistTab}
+          onalbum={(id) => openAlbumById(id)}
+          onplay={play}
+          onplayall={() => playArtistOf(top.artist)}
+        />
+      {:else if navLoading}
+        <p class="result-count">加载中…</p>
+      {/if}
+
       {#if active === 'local'}
         <div class="local-bar">
           <button class="local-action" onclick={pickLocalFolder}>添加文件夹</button>
@@ -720,13 +945,20 @@
           {/if}
         </div>
       {:else}
-        <p class="result-count">{listTitle} · {tracks.length} 首</p>
-        <TrackList
-        {tracks}
-        currentId={current?.id ?? null}
-        playing={snapshot.state === 'playing'}
-        onplay={play}
-      />
+        {#if !top}
+          <p class="result-count">{listTitle} · {tracks.length} 首</p>
+        {/if}
+        <!-- 歌手页自带列表（热门歌曲 / 专辑 Tab），这里不要重复渲染 -->
+        {#if top?.kind !== 'artist'}
+          <TrackList
+            {tracks}
+            currentId={current?.id ?? null}
+            playing={snapshot.state === 'playing'}
+            onplay={play}
+            onalbum={openAlbum}
+            onartist={openArtist}
+          />
+        {/if}
       {/if}
     </section>
   </main>
@@ -746,7 +978,6 @@
       onnext={() => step('next')}
       onprevious={() => step('previous')}
       onmode={cyclePlayMode}
-      
       onlyrics={flipLyrics}
       onopen={() => (stageOpen = true)}
       onseek={seek}
@@ -782,7 +1013,15 @@
     onnext={() => step('next')}
     onprevious={() => step('previous')}
     onmode={cyclePlayMode}
-    
+    onalbum={() => {
+      if (!current) return;
+      stageOpen = false;
+      void openAlbum(current);
+    }}
+    onartist={(id) => {
+      stageOpen = false;
+      void openArtist(id);
+    }}
     onvolume={(volume) => setVolume(volume)}
   />
 {/if}
@@ -1531,6 +1770,105 @@
   .chip-x {
     font-size: 13px;
     opacity: 0.6;
+  }  /* ===== 专辑页 ===== */
+  .album-head {
+    display: flex;
+    align-items: flex-end;
+    gap: 20px;
+    padding: 8px 4px 22px;
+  }
+
+  .album-back {
+    width: 32px;
+    height: 32px;
+    align-self: flex-start;
+    margin-top: 6px;
+    flex: none;
+    border: none;
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--text) 8%, transparent);
+    color: var(--text);
+    font-size: 15px;
+    cursor: pointer;
+    display: grid;
+    place-items: center;
+  }
+
+  .album-back:hover {
+    background: color-mix(in srgb, var(--text) 14%, transparent);
+  }
+
+  .album-cover {
+    width: 148px;
+    height: 148px;
+    border-radius: 10px;
+    object-fit: cover;
+    background: var(--surface-2);
+    flex: none;
+  }
+
+  .album-cover.placeholder {
+    display: grid;
+    place-items: center;
+    font-size: 40px;
+    color: var(--text-faint);
+  }
+
+  .album-info {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding-bottom: 4px;
+  }
+
+  .album-kind {
+    margin: 0;
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+  }
+
+  .album-name {
+    margin: 0;
+    font-size: 26px;
+    line-height: 1.25;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+    color: var(--text);
+    overflow-wrap: anywhere;
+  }
+
+  .album-artists {
+    margin: 0;
+    font-size: 13px;
+    color: var(--text-dim);
+  }
+
+  .album-meta {
+    margin: 0;
+    font-size: 12px;
+    color: var(--text-faint);
+  }
+
+  .album-play {
+    margin-left: auto;
+    height: 36px;
+    padding: 0 20px;
+    border: none;
+    border-radius: 999px;
+    background: var(--accent);
+    color: var(--accent-contrast, #fff);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    flex: none;
+    margin-bottom: 4px;
+  }
+
+  .album-play:hover {
+    filter: brightness(1.05);
   }</style>
 
 

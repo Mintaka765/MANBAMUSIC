@@ -3,7 +3,11 @@ export interface Track {
   id: number;
   name: string;
   artists: string[];
+  /** 与 artists 一一对应的歌手 id（本地曲目没有） */
+  artistIds?: number[];
   album: string;
+  /** 专辑 id：本地曲目没有 */
+  albumId?: number | null;
   coverUrl: string | null;
   /** 毫秒 */
   durationMs: number;
@@ -76,4 +80,41 @@ export interface QueueState {
   shuffle: boolean;
 }
 
+/** 与 Rust 侧 AlbumDto 对齐。 */
+export interface AlbumDetail {
+  id: number;
+  name: string;
+  artists: string[];
+  artistIds: number[];
+  coverUrl: string | null;
+  publishMs: number | null;
+  company: string;
+  description: string;
+  tracks: Track[];
+}
 
+/** 与 Rust 侧 ArtistDto 对齐。 */
+export interface ArtistDetail {
+  id: number;
+  name: string;
+  coverUrl: string | null;
+  briefDesc: string;
+  albumCount: number;
+  songCount: number;
+  hotSongs: Track[];
+}
+
+/** 与 Rust 侧 ArtistAlbumDto 对齐。 */
+export interface ArtistAlbum {
+  id: number;
+  name: string;
+  coverUrl: string | null;
+  publishMs: number | null;
+  size: number;
+  company: string;
+}
+
+export interface ArtistAlbums {
+  albums: ArtistAlbum[];
+  more: boolean;
+}

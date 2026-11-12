@@ -9,12 +9,18 @@
     playing = true,
     onplay,
     onselect,
+    onalbum,
+    onartist,
   }: {
     tracks: Track[];
     currentId?: number | null;
     playing?: boolean;
     onplay: (track: Track, index: number) => void;
     onselect?: (track: Track, index: number) => void;
+    /** 点专辑名进专辑页 */
+    onalbum?: (track: Track) => void;
+    /** 点歌手名进歌手页 */
+    onartist?: (id: number) => void;
   } = $props();
 
   /** 单击只选中（给右键菜单留位置），双击才播放 */
@@ -124,9 +130,40 @@
               {/if}
               <span class="main">
                 <span class="title">{track.name}</span>
-                <span class="meta">{track.artists.join(' / ')}</span>
+                <span class="meta">
+                  {#each track.artists as artist, index (index)}
+                    {#if index > 0}<span class="sep"> / </span>{/if}
+                    {#if onartist && track.artistIds?.[index]}
+                      <span
+                        class="artist-link"
+                        role="link"
+                        tabindex="-1"
+                        title="查看歌手"
+                        onclick={(event) => {
+                          event.stopPropagation();
+                          onartist(track.artistIds?.[index] ?? 0);
+                        }}
+                      >{artist}</span>
+                    {:else}
+                      {artist}
+                    {/if}
+                  {/each}
+                </span>
               </span>
-              <span class="album">{track.album}</span>
+              {#if track.albumId && onalbum}
+                <span
+                  class="album link"
+                  role="link"
+                  tabindex="-1"
+                  title="查看专辑"
+                  onclick={(event) => {
+                    event.stopPropagation();
+                    onalbum(track);
+                  }}
+                >{track.album}</span>
+              {:else}
+                <span class="album">{track.album}</span>
+              {/if}
               {#if feeLabel(track.fee)}
                 <span class="badge" data-fee={track.fee}>{feeLabel(track.fee)}</span>
               {:else}
@@ -345,7 +382,25 @@
     color: var(--text-faint);
     font-variant-numeric: tabular-nums;
   }
-</style>
+  .album.link {
+    cursor: pointer;
+    transition: color 140ms ease;
+  }
+
+  .album.link:hover {
+    color: var(--text);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }  .meta .artist-link {
+    cursor: pointer;
+    transition: color 140ms ease;
+  }
+
+  .meta .artist-link:hover {
+    color: var(--text);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }</style>
 
 
 

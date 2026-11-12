@@ -1,5 +1,8 @@
 import { invoke } from '@tauri-apps/api/core';
 import type {
+  AlbumDetail,
+  ArtistAlbums,
+  ArtistDetail,
   AppSettings,
   LyricTrack,
   PlayerSnapshot,
@@ -194,7 +197,22 @@ export async function scanLocal(): Promise<Track[]> {
   return invoke<Track[]>('scan_local');
 }
 
+/** 专辑详情：元信息 + 曲目。 */
+export async function albumDetail(id: number): Promise<AlbumDetail> {
+  return invoke<AlbumDetail>('album_detail', { id });
+}
+
 /** 每日推荐（未登录时后端会返回空数组或报错）。 */
+/** 歌手详情：热门歌曲 + 统计。 */
+export async function artistDetail(id: number): Promise<ArtistDetail> {
+  return invoke<ArtistDetail>('artist_detail', { id });
+}
+
+/** 歌手专辑列表（分页）。 */
+export async function artistAlbums(id: number, limit = 30, offset = 0): Promise<ArtistAlbums> {
+  return invoke<ArtistAlbums>('artist_albums', { id, limit, offset });
+}
+
 export async function dailySongs(): Promise<Track[]> {
   if (!isDesktop) return [];
   return invoke<Track[]>('daily_songs');
