@@ -226,7 +226,16 @@
           aria-label={shuffle ? '随机播放' : repeat === 'one' ? '单曲循环' : repeat === 'all' ? '列表循环' : '顺序播放'}
           onclick={onmode}
         >
-          <Icon name={shuffle ? 'shuffle' : repeat === 'one' ? 'repeatOne' : 'repeat'} size={18} />
+          <Icon
+            name={shuffle
+              ? 'shuffle'
+              : repeat === 'one'
+                ? 'repeatOne'
+                : repeat === 'all'
+                  ? 'repeat'
+                  : 'sequential'}
+            size={18}
+          />
         </button>
       </div>
 

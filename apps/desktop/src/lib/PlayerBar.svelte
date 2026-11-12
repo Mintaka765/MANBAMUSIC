@@ -261,7 +261,13 @@
       onclick={onmode}
     >
       <Icon
-        name={shuffle ? 'shuffle' : repeat === 'one' ? 'repeatOne' : 'repeat'}
+        name={shuffle
+          ? 'shuffle'
+          : repeat === 'one'
+            ? 'repeatOne'
+            : repeat === 'all'
+              ? 'repeat'
+              : 'sequential'}
         size={16}
       />
     </button>

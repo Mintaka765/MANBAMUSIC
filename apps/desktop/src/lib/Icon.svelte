@@ -6,6 +6,7 @@
     | 'pause'
     | 'repeat'
     | 'repeatOne'
+    | 'sequential'
     | 'shuffle'
     | 'lyrics'
     | 'volume'
@@ -50,7 +51,12 @@
   {:else if name === 'pause'}
     <path d="M7 5h3.4v14H7z" />
     <path d="M13.6 5H17v14h-3.4z" />
-  {:else if name === 'repeat' || name === 'repeatOne'}
+  {:else if name === 'sequential'}
+  <!-- 顺序播放：一圈方框 + 左上角指示箭头（不循环） -->
+  <path d="M4 7.5v9" />
+  <path d="M8 12h9.5" />
+  <path d="M14.2 8.6 17.6 12l-3.4 3.4" />
+{:else if name === 'repeat' || name === 'repeatOne'}
     <path d="M17 2.5l3.5 3.5L17 9.5" />
     <path d="M3.5 11.5V9a4 4 0 0 1 4-4h13" />
     <path d="M7 21.5L3.5 18 7 14.5" />
