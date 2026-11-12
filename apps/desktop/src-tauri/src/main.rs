@@ -337,7 +337,13 @@ struct TrackLite {
     id: u64,
     name: String,
     artists: Vec<String>,
+    /// 与 artists 一一对应的歌手 id（本地曲目为空）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    artist_ids: Vec<u64>,
     album: String,
+    /// 专辑 id：用来进专辑页（本地曲目没有）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    album_id: Option<u64>,
     cover_url: Option<String>,
     duration_ms: u64,
     fee: i64,
@@ -352,7 +358,9 @@ impl From<Song> for TrackLite {
             id: song.id,
             name: song.name,
             artists: song.artists,
+            artist_ids: song.artist_ids,
             album: song.album,
+            album_id: song.album_id,
             cover_url: song.cover_url,
             duration_ms: song.duration_ms,
             fee: song.fee,
@@ -1064,7 +1072,9 @@ async fn scan_local(state: State<'_, AppState>) -> Result<Vec<TrackLite>, String
             id: track.id,
             name: track.name,
             artists: track.artists,
+            artist_ids: Vec::new(),
             album: track.album,
+            album_id: None,
             cover_url: None,
             duration_ms: track.duration_ms,
             fee: 0,
@@ -1121,6 +1131,112 @@ async fn daily_songs(state: State<'_, AppState>) -> Result<Vec<TrackLite>, Strin
         .map(|songs| songs.into_iter().map(TrackLite::from).collect())
         .map_err(|error| error.to_string())
 }
+/// 专辑详情：元信息 + 曲目。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AlbumDto {
+    id: u64,
+    name: String,
+    artists: Vec<String>,
+    artist_ids: Vec<u64>,
+    cover_url: Option<String>,
+    publish_ms: Option<u64>,
+    company: String,
+    description: String,
+    tracks: Vec<TrackLite>,
+}
+
+#[tauri::command]
+async fn album_detail(state: State<'_, AppState>, id: u64) -> Result<AlbumDto, String> {
+    let detail = endpoints::album(&state.client, id)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(AlbumDto {
+        id: detail.id,
+        name: detail.name,
+        artists: detail.artists,
+        artist_ids: detail.artist_ids,
+        cover_url: detail.cover_url,
+        publish_ms: detail.publish_ms,
+        company: detail.company,
+        description: detail.description,
+        tracks: detail.songs.into_iter().map(TrackLite::from).collect(),
+    })
+}
+
+/// 歌手详情：热门歌曲 + 统计。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ArtistDto {
+    id: u64,
+    name: String,
+    cover_url: Option<String>,
+    brief_desc: String,
+    album_count: u64,
+    song_count: u64,
+    hot_songs: Vec<TrackLite>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ArtistAlbumDto {
+    id: u64,
+    name: String,
+    cover_url: Option<String>,
+    publish_ms: Option<u64>,
+    size: u64,
+    company: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ArtistAlbumsDto {
+    albums: Vec<ArtistAlbumDto>,
+    more: bool,
+}
+
+#[tauri::command]
+async fn artist_detail(state: State<'_, AppState>, id: u64) -> Result<ArtistDto, String> {
+    let detail = endpoints::artist(&state.client, id)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(ArtistDto {
+        id: detail.id,
+        name: detail.name,
+        cover_url: detail.cover_url,
+        brief_desc: detail.brief_desc,
+        album_count: detail.album_count,
+        song_count: detail.song_count,
+        hot_songs: detail.hot_songs.into_iter().map(TrackLite::from).collect(),
+    })
+}
+
+#[tauri::command]
+async fn artist_albums(
+    state: State<'_, AppState>,
+    id: u64,
+    limit: u32,
+    offset: u32,
+) -> Result<ArtistAlbumsDto, String> {
+    let (albums, more) = endpoints::artist_albums(&state.client, id, limit, offset)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(ArtistAlbumsDto {
+        albums: albums
+            .into_iter()
+            .map(|album| ArtistAlbumDto {
+                id: album.id,
+                name: album.name,
+                cover_url: album.cover_url,
+                publish_ms: album.publish_ms,
+                size: album.size,
+                company: album.company,
+            })
+            .collect(),
+        more,
+    })
+}
+
 /// 待播清单：按播放顺序展开（随机模式下就是打乱后的顺序）。
 #[tauri::command]
 fn queue_items(state: State<'_, AppState>) -> QueueItemsDto {
@@ -1801,6 +1917,9 @@ fn main() {
             queue_state,
             queue_items,
             daily_songs,
+            album_detail,
+            artist_detail,
+            artist_albums,
             local_folders,
             add_local_folder,
             remove_local_folder,

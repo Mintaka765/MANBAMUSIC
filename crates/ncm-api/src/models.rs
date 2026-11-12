@@ -7,6 +7,9 @@ pub struct Song {
     pub id: u64,
     pub name: String,
     pub artists: Vec<String>,
+    /// 与 rtists 一一对应的歌手 id（本地曲目为空）
+    #[serde(default)]
+    pub artist_ids: Vec<u64>,
     pub album: String,
     pub album_id: Option<u64>,
     pub cover_url: Option<String>,
@@ -27,19 +30,25 @@ impl Song {
             .get("artists")
             .or_else(|| value.get("ar"))
             .and_then(Value::as_array);
-        let artists = artists_node
-            .map(|list| {
-                list.iter()
-                    .filter_map(|a| a.get("name").and_then(Value::as_str).map(str::to_string))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let mut artists: Vec<String> = Vec::new();
+        let mut artist_ids: Vec<u64> = Vec::new();
+        if let Some(list) = artists_node {
+            for item in list {
+                let Some(name) = item.get("name").and_then(Value::as_str) else {
+                    continue;
+                };
+                artists.push(name.to_string());
+                // 没有 id 的（少数老结构）补 0，保持与名字等长
+                artist_ids.push(item.get("id").and_then(Value::as_u64).unwrap_or(0));
+            }
+        }
 
         let album_node = value.get("album").or_else(|| value.get("al"));
         Some(Self {
             id,
             name,
             artists,
+            artist_ids,
             album: album_node
                 .and_then(|a| a.get("name"))
                 .and_then(Value::as_str)
