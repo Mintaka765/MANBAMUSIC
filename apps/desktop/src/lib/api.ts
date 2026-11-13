@@ -164,6 +164,30 @@ export async function jumpTo(index: number): Promise<void> {
 export async function moveQueueItem(from: number, to: number): Promise<QueueState> {
   return invoke<QueueState>('move_queue_item', { from, to });
 }
+/** 插到当前曲之后（「下一首播放」）。 */
+export async function queueInsertNext(track: Track): Promise<QueueState> {
+  return invoke<QueueState>('queue_insert_next', { track });
+}
+
+/** 追加到待播清单末尾。 */
+export async function queueAppend(track: Track): Promise<QueueState> {
+  return invoke<QueueState>('queue_append', { track });
+}
+
+/** 从待播清单移除第 index 项。 */
+export async function queueRemove(index: number): Promise<QueueState> {
+  return invoke<QueueState>('queue_remove', { index });
+}
+
+/** 在资源管理器里定位本地文件。 */
+export async function revealPath(path: string): Promise<void> {
+  await invoke('reveal_path', { path });
+}
+
+/** 把曲目收藏到指定歌单。 */
+export async function addToPlaylist(playlistId: number, trackId: number): Promise<void> {
+  await invoke('add_to_playlist', { playlistId, trackId });
+}
 export async function getSettings(): Promise<AppSettings> {
   if (!isDesktop) return { level: 'exhigh', closeToTray: false, localFolders: [] };
   return invoke<AppSettings>('get_settings');

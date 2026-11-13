@@ -1,0 +1,22 @@
+/** 图标名联合类型（Icon.svelte 与菜单等模块共用）。 */
+export type IconName =
+  | 'prev'
+  | 'next'
+  | 'play'
+  | 'pause'
+  | 'repeat'
+  | 'repeatOne'
+  | 'sequential'
+  | 'shuffle'
+  | 'lyrics'
+  | 'volume'
+  | 'home'
+  | 'song'
+  | 'album'
+  | 'artist'
+  | 'heart'
+  | 'plus'
+  | 'settings'
+  | 'queue'
+  | 'radio'
+  | 'radar';

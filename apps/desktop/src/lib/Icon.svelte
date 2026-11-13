@@ -1,25 +1,5 @@
 <script lang="ts">
-  export type IconName =
-    | 'prev'
-    | 'next'
-    | 'play'
-    | 'pause'
-    | 'repeat'
-    | 'repeatOne'
-    | 'sequential'
-    | 'shuffle'
-    | 'lyrics'
-    | 'volume'
-    | 'home'
-    | 'song'
-    | 'album'
-    | 'artist'
-    | 'heart'
-    | 'plus'
-    | 'settings'
-    | 'queue'
-    | 'radio'
-    | 'radar';
+  import type { IconName } from './icons';
 
   let { name, size = 16 }: { name: IconName; size?: number } = $props();
 
