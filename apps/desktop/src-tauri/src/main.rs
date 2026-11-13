@@ -1334,6 +1334,164 @@ async fn move_queue_item(
     Ok(queue_state(state))
 }
 
+/// 把一首插到当前曲后面（菜单里的「下一首播放」）。
+///
+/// 预挂载的下一首已经进了 rodio 队列、取不回来，所以这里重挂当前曲并
+/// Seek 回原位置——会有极短停顿，但语义正确。
+#[tauri::command]
+async fn queue_insert_next(
+    state: State<'_, AppState>,
+    track: TrackLite,
+) -> Result<QueueDto, String> {
+    let (position, restart) = {
+        let mut queue = state.queue.lock().map_err(|_| "队列锁失败")?;
+        let index = queue.tracks.len();
+        queue.tracks.push(track);
+        let insert_at = if queue.order.is_empty() {
+            0
+        } else {
+            (queue.position + 1).min(queue.order.len())
+        };
+        queue.order.insert(insert_at, index);
+
+        let playing = queue.current_id().is_some();
+        if playing {
+            queue.pending = None;
+        }
+        (queue.position, playing)
+    };
+
+    if restart {
+        let snapshot = state.player.snapshot();
+        let resume_ms = snapshot.position_ms;
+        let was_paused = snapshot.state == PlaybackState::Paused;
+        play_at(&state, position).await?;
+        if resume_ms > 0 {
+            state.player.send(Command::Seek(resume_ms));
+        }
+        if was_paused {
+            state.player.send(Command::Pause);
+        }
+    }
+
+    persist_state(&state);
+    Ok(queue_state(state))
+}
+
+/// 追加到待播清单末尾。
+#[tauri::command]
+async fn queue_append(
+    state: State<'_, AppState>,
+    track: TrackLite,
+) -> Result<QueueDto, String> {
+    {
+        let mut queue = state.queue.lock().map_err(|_| "队列锁失败")?;
+        let index = queue.tracks.len();
+        queue.tracks.push(track);
+        queue.order.push(index);
+    }
+    persist_state(&state);
+    Ok(queue_state(state))
+}
+
+/// 从待播清单移除一项；正在播放的那首不允许移除。
+#[tauri::command]
+async fn queue_remove(state: State<'_, AppState>, index: usize) -> Result<QueueDto, String> {
+    let (position, restart) = {
+        let mut queue = state.queue.lock().map_err(|_| "队列锁失败")?;
+        let len = queue.order.len();
+        if index >= len {
+            return Err("待播清单下标越界".into());
+        }
+        if queue.current_id().is_some() && index == queue.position {
+            return Err("正在播放的歌曲不能移除".into());
+        }
+
+        queue.order.remove(index);
+        if index < queue.position {
+            queue.position = queue.position.saturating_sub(1);
+        }
+
+        // 重建 tracks 池：order 里的下标是 tracks 的索引，
+        // 且持久化校验要求 order.len() == tracks.len()，删完必须重新编号，
+        // 否则重启会把整个队列判定成损坏而丢掉。
+        let mut rebuilt = Vec::with_capacity(queue.order.len());
+        for old in &queue.order {
+            rebuilt.push(queue.tracks[*old].clone());
+        }
+        queue.order = (0..rebuilt.len()).collect();
+        queue.tracks = rebuilt;
+
+        // 预挂载的下一首被删了：重挂当前曲才能对齐
+        let restart = matches!(queue.pending, Some((pending, _)) if pending == index);
+        if restart {
+            queue.pending = None;
+        } else if let Some((pending, id)) = queue.pending {
+            if pending > index {
+                queue.pending = Some((pending - 1, id));
+            }
+        }
+        (queue.position, restart)
+    };
+
+    if restart {
+        let snapshot = state.player.snapshot();
+        let resume_ms = snapshot.position_ms;
+        let was_paused = snapshot.state == PlaybackState::Paused;
+        play_at(&state, position).await?;
+        if resume_ms > 0 {
+            state.player.send(Command::Seek(resume_ms));
+        }
+        if was_paused {
+            state.player.send(Command::Pause);
+        }
+    }
+
+    persist_state(&state);
+    Ok(queue_state(state))
+}
+
+/// 在资源管理器里定位本地文件。
+#[tauri::command]
+fn reveal_path(path: String) -> Result<(), String> {
+    let file = std::path::Path::new(&path);
+    if !file.exists() {
+        return Err("文件不存在".into());
+    }
+    #[cfg(windows)]
+    {
+        std::process::Command::new("explorer")
+            .arg(format!("/select,{path}"))
+            .spawn()
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+/// 把曲目收藏（添加）到指定歌单。
+#[tauri::command]
+async fn add_to_playlist(
+    state: State<'_, AppState>,
+    playlist_id: u64,
+    track_id: u64,
+) -> Result<(), String> {
+    endpoints::add_tracks(&state.client, playlist_id, &[track_id])
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// 从歌单移除曲目（验证与后续批量管理用）。
+#[tauri::command]
+async fn remove_from_playlist(
+    state: State<'_, AppState>,
+    playlist_id: u64,
+    track_id: u64,
+) -> Result<(), String> {
+    endpoints::remove_tracks(&state.client, playlist_id, &[track_id])
+        .await
+        .map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 fn player_snapshot(state: State<'_, AppState>) -> PlayerSnapshotDto {
     let snapshot = state.player.snapshot();
@@ -1930,6 +2088,12 @@ fn main() {
             save_settings,
             jump_to,
             move_queue_item,
+            queue_insert_next,
+            queue_append,
+            queue_remove,
+            reveal_path,
+            add_to_playlist,
+            remove_from_playlist,
             set_repeat,
             toggle_shuffle,
             player_snapshot,

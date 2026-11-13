@@ -5,11 +5,16 @@
   let {
     open,
     currentId = null,
+    version = 0,
     onclose,
+    oncontext,
   }: {
     open: boolean;
     currentId?: number | null;
+    /** 外部改动队列后 +1，触发刷新 */
+    version?: number;
     onclose: () => void;
+    oncontext?: (index: number, track: Track, event: MouseEvent) => void;
   } = $props();
 
   /** 行高固定，虚拟滚动依赖它 */
@@ -49,8 +54,13 @@
 
   // 打开面板、切歌时拉一次最新顺序
   $effect(() => {
-    if (!open) return;
-    void currentId;
+    // 注意：不能写成 `void version`——生产构建会把这种无副作用表达式删掉，
+    // 依赖就丢了，面板打开后永远不会刷新。放进条件里才稳。
+    const openNow = open;
+    const trackId = currentId;
+    const tick = version;
+    if (!openNow) return;
+    if (tick < 0 || trackId === -1) return;
     loading = tracks.length === 0;
     void refresh();
   });
@@ -190,7 +200,7 @@
           <div class="drop-line" style:top={`${dropTarget * ROW_H}px`}></div>
         {/if}
         <ul style:transform={`translateY(${start * ROW_H}px)`}>
-          {#each visible as track, offset (track.id)}
+          {#each visible as track, offset (start + offset)}
             {@const index = start + offset}
             <li
               class:current={index === position}
@@ -201,6 +211,10 @@
                 class="row"
                 title={track.name}
                 onpointerdown={(event) => onRowPointerDown(event, index)}
+                oncontextmenu={(event) => {
+                  event.preventDefault();
+                  oncontext?.(index, track, event);
+                }}
                 onclick={() => {
                   if (suppressClick) return;
                   jump(index);

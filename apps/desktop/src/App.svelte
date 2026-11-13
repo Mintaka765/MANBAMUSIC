@@ -5,6 +5,8 @@
   import Lyrics from './lib/Lyrics.svelte';
   import Icon from './lib/Icon.svelte';
   import ArtistView from './lib/ArtistView.svelte';
+  import ContextMenu from './lib/ContextMenu.svelte';
+  import PlaylistPicker from './lib/PlaylistPicker.svelte';
   import NowPlaying from './lib/NowPlaying.svelte';
   import PlayerBar from './lib/PlayerBar.svelte';
   import SearchBar from './lib/SearchBar.svelte';
@@ -14,6 +16,7 @@
   import TrackList from './lib/TrackList.svelte';
   import { themeStore } from './lib/theme/store.svelte';
   import {
+    addToPlaylist,
     albumDetail,
     artistAlbums,
     artistDetail,
@@ -27,14 +30,19 @@
     nextTrack,
     pausePlayer,
     playerSnapshot,
+    queueAppend,
+    queueInsertNext,
     queueItems,
+    queueRemove,
     playlistTracks,
     playQueue,
     previousTrack,
     addLocalFolder,
     dailySongs,
+    jumpTo,
     localFolders,
     removeLocalFolder,
+    revealPath,
     scanLocal,
     playRadio,
     radarTracks,
@@ -49,6 +57,7 @@
     toggleLyrics,
     toggleShuffle,
   } from './lib/api';
+  import type { IconName } from './lib/icons';
   import type {
     AlbumDetail,
     ArtistAlbum,
@@ -83,6 +92,22 @@
   const albumCache = new Map<number, AlbumDetail>();
   const artistCache = new Map<number, ArtistDetail>();
   const top = $derived(pages.length > 0 ? pages[pages.length - 1] : null);
+  /** 右键菜单 */
+  type MenuItem = {
+    label: string;
+    onselect: () => void;
+    icon?: IconName;
+    disabled?: boolean;
+    danger?: boolean;
+    separator?: boolean;
+  };
+  let menu = $state<{ x: number; y: number; items: MenuItem[] } | null>(null);
+  let pickerTrack = $state<Track | null>(null);
+  let notice = $state<string | null>(null);
+  let noticeTimer: ReturnType<typeof setTimeout> | null = null;
+  /** 外部改队列后 +1，让待播清单刷新 */
+  let queueVersion = $state(0);
+
   /** 已喜欢的曲目 id；红心状态以服务端为准，本地只做乐观更新 */
   let likedIds = $state<Set<number>>(new Set());
 
@@ -309,6 +334,153 @@
     tracks = artist.hotSongs;
     listTitle = `歌手 · ${artist.name}`;
     searched = true;
+  }
+
+  function showNotice(text: string) {
+    notice = text;
+    if (noticeTimer) clearTimeout(noticeTimer);
+    noticeTimer = setTimeout(() => {
+      notice = null;
+      noticeTimer = null;
+    }, 2600);
+  }
+
+  async function copyText(text: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // WebView 里剪贴板可能没权限，退回隐藏 textarea
+      const area = document.createElement('textarea');
+      area.value = text;
+      area.style.position = 'fixed';
+      area.style.opacity = '0';
+      document.body.appendChild(area);
+      area.select();
+      document.execCommand('copy');
+      area.remove();
+    }
+    showNotice('已复制');
+  }
+
+  async function setLikedTrack(track: Track) {
+    const next = !likedIds.has(track.id);
+    const optimistic = new Set(likedIds);
+    if (next) optimistic.add(track.id);
+    else optimistic.delete(track.id);
+    likedIds = optimistic;
+    try {
+      await likeSong(track.id, next);
+      showNotice(next ? '已收藏' : '已取消收藏');
+    } catch (cause) {
+      const revert = new Set(likedIds);
+      if (next) revert.delete(track.id);
+      else revert.add(track.id);
+      likedIds = revert;
+      showNotice(cause instanceof Error ? cause.message : String(cause));
+    }
+  }
+
+  async function insertNext(track: Track) {
+    try {
+      await queueInsertNext(track);
+      queueVersion += 1;
+      showNotice('已插入到下一首');
+    } catch (cause) {
+      showNotice(cause instanceof Error ? cause.message : String(cause));
+    }
+  }
+
+  async function appendTrack(track: Track) {
+    try {
+      await queueAppend(track);
+      queueVersion += 1;
+      showNotice('已加入待播清单');
+    } catch (cause) {
+      showNotice(cause instanceof Error ? cause.message : String(cause));
+    }
+  }
+
+  async function removeFromQueue(index: number) {
+    try {
+      await queueRemove(index);
+      queueVersion += 1;
+    } catch (cause) {
+      showNotice(cause instanceof Error ? cause.message : String(cause));
+    }
+  }
+
+  function buildTrackMenu(track: Track, index: number): MenuItem[] {
+    const items: MenuItem[] = [
+      { label: '播放', icon: 'play', onselect: () => void play(track, index) },
+      { label: '下一首播放', icon: 'next', onselect: () => void insertNext(track) },
+      { label: '添加到待播清单', icon: 'plus', onselect: () => void appendTrack(track) },
+      { label: '', onselect: () => {}, separator: true },
+    ];
+
+    if (track.path) {
+      items.push({
+        label: '打开文件所在位置',
+        onselect: () => {
+          void revealPath(track.path!).catch((cause) =>
+            showNotice(cause instanceof Error ? cause.message : String(cause)),
+          );
+        },
+      });
+      items.push({ label: '复制文件路径', onselect: () => void copyText(track.path!) });
+      return items;
+    }
+
+    items.push({
+      label: likedIds.has(track.id) ? '取消收藏' : '收藏',
+      icon: 'heart',
+      onselect: () => void setLikedTrack(track),
+    });
+    items.push({
+      label: '收藏到歌单…',
+      icon: 'song',
+      onselect: () => (pickerTrack = track),
+    });
+    if (track.albumId) {
+      items.push({ label: '查看专辑', icon: 'album', onselect: () => openAlbum(track) });
+    }
+    const artistId = track.artistIds?.[0];
+    if (artistId) {
+      items.push({ label: '查看歌手', icon: 'artist', onselect: () => void openArtist(artistId) });
+    }
+    items.push({ label: '', onselect: () => {}, separator: true });
+    items.push({
+      label: '复制歌曲信息',
+      onselect: () => void copyText(`${track.name} - ${track.artists.join(' / ')}`),
+    });
+    return items;
+  }
+
+  function openTrackMenu(track: Track, index: number, event: MouseEvent) {
+    menu = { x: event.clientX, y: event.clientY, items: buildTrackMenu(track, index) };
+  }
+
+  function openQueueMenu(index: number, track: Track, event: MouseEvent) {
+    const items: MenuItem[] = [
+      { label: '播放这首', icon: 'play', onselect: () => void jumpTo(index) },
+      { label: '从队列移除', danger: true, onselect: () => void removeFromQueue(index) },
+      { label: '', onselect: () => {}, separator: true },
+      { label: '复制歌名', onselect: () => void copyText(track.name) },
+    ];
+    if (!track.path) {
+      items.push({ label: '收藏到歌单…', icon: 'song', onselect: () => (pickerTrack = track) });
+    }
+    menu = { x: event.clientX, y: event.clientY, items };
+  }
+
+  async function choosePlaylist(playlist: Playlist) {
+    const track = pickerTrack;
+    if (!track) return;
+    try {
+      await addToPlaylist(playlist.id, track.id);
+      showNotice(`已添加到「${playlist.name}」`);
+    } catch (cause) {
+      showNotice(cause instanceof Error ? cause.message : String(cause));
+    }
   }
 
   /** 打开专辑页（入口：曲目专辑列、播放页、专辑页里的专辑卡片） */
@@ -957,6 +1129,7 @@
             onplay={play}
             onalbum={openAlbum}
             onartist={openArtist}
+            oncontext={openTrackMenu}
           />
         {/if}
       {/if}
@@ -989,7 +1162,35 @@
   </div>
 </div>
 
-<QueuePanel open={queueOpen} currentId={current?.id ?? null} onclose={() => (queueOpen = false)} />
+<QueuePanel
+  open={queueOpen}
+  currentId={current?.id ?? null}
+  version={queueVersion}
+  onclose={() => (queueOpen = false)}
+  oncontext={openQueueMenu}
+/>
+
+{#if menu}
+  <ContextMenu
+    x={menu.x}
+    y={menu.y}
+    items={menu.items}
+    onclose={() => (menu = null)}
+  />
+{/if}
+
+{#if pickerTrack}
+  <PlaylistPicker
+    track={pickerTrack}
+    {playlists}
+    onchoose={choosePlaylist}
+    onclose={() => (pickerTrack = null)}
+  />
+{/if}
+
+{#if notice}
+  <div class="toast" role="status">{notice}</div>
+{/if}
 
 <SettingsPanel
   open={settingsPageOpen}
@@ -1869,6 +2070,33 @@
 
   .album-play:hover {
     filter: brightness(1.05);
+  }  /* ===== 轻提示 ===== */
+  .toast {
+    position: fixed;
+    left: 50%;
+    bottom: calc(var(--player-h, 76px) + 18px);
+    transform: translateX(-50%);
+    z-index: 80;
+    padding: 8px 16px;
+    border-radius: 999px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow-2, 0 10px 28px rgba(0, 0, 0, 0.25));
+    color: var(--text);
+    font-size: 12.5px;
+    pointer-events: none;
+    animation: toast-in 140ms ease;
+  }
+
+  @keyframes toast-in {
+    from {
+      opacity: 0;
+      transform: translate(-50%, 6px);
+    }
+    to {
+      opacity: 1;
+      transform: translate(-50%, 0);
+    }
   }</style>
 
 

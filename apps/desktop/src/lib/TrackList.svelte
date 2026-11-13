@@ -11,6 +11,7 @@
     onselect,
     onalbum,
     onartist,
+    oncontext,
   }: {
     tracks: Track[];
     currentId?: number | null;
@@ -21,6 +22,8 @@
     onalbum?: (track: Track) => void;
     /** 点歌手名进歌手页 */
     onartist?: (id: number) => void;
+    /** 右键菜单 */
+    oncontext?: (track: Track, index: number, event: MouseEvent) => void;
   } = $props();
 
   /** 单击只选中（给右键菜单留位置），双击才播放 */
@@ -96,7 +99,7 @@
   <div class="viewport" bind:this={viewport} onscroll={onScroll}>
     <div class="spacer" style:height={`${total * ROW_H}px`}>
       <ul class="tracks" style:transform={`translateY(${start * ROW_H}px)`}>
-        {#each visible as track, offset (track.id)}
+        {#each visible as track, offset (start + offset)}
           {@const index = start + offset}
           <li class:active={track.id === currentId} class:selected={track.id === selectedId}>
             <button
@@ -106,6 +109,11 @@
               style:--i={Math.min(index, 12)}
               onclick={() => select(track, index)}
               ondblclick={() => onplay(track, index)}
+              oncontextmenu={(event) => {
+                event.preventDefault();
+                select(track, index);
+                oncontext?.(track, index, event);
+              }}
               onkeydown={(event) => {
                 if (event.key === 'Enter') onplay(track, index);
               }}
